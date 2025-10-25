@@ -1,0 +1,9 @@
+The server should expect a JSON object with the following structure:
+
+{
+  "type": "text" | "image" | "video",
+  "content": string
+}
+
+- "type": The type of content being sent.
+- "content": The actual content. For "text", this will be the selected text. For "image" and "video", this will be the URL of the media.
