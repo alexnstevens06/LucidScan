@@ -1,83 +1,20 @@
-<div align="center">
-  
-![image](https://github.com/user-attachments/assets/b32c5050-a06b-4c07-92ff-790e317f2e92)
-  
-  <h1>StableGuard</h1>
-</div>
+# LucidScan
 
-<div align="center">
+Local content-detection extension from TIDALHack 25. The Chrome-side script sends selected text, or an image or video URL, to a Flask server in this repo. The server scores text with one model and images or video with another.
 
-  <a href="https://github.com/muhammad-fiaz/StableGuard">
-    <img src="https://img.shields.io/github/stars/muhammad-fiaz/StableGuard?style=plastic" alt="GitHub Stars">
-  </a>
-  <a href="https://github.com/muhammad-fiaz/StableGuard/issues">
-    <img src="https://img.shields.io/github/issues/muhammad-fiaz/StableGuard?style=plastic" alt="GitHub Issues">
-  </a>
-  <a href="https://github.com/muhammad-fiaz/StableGuard/network/members">
-    <img src="https://img.shields.io/github/forks/muhammad-fiaz/StableGuard?style=plastic" alt="GitHub Forks">
-  </a>
-  <a href="https://github.com/muhammad-fiaz/StableGuard/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/muhammad-fiaz/StableGuard?style=plastic" alt="License">
-  </a>
+## Layout
 
-  <img src="https://img.shields.io/github/repo-size/muhammad-fiaz/StableGuard?style=plastic" alt="Repo Size">
-  <img src="https://img.shields.io/github/languages/count/muhammad-fiaz/StableGuard?style=plastic" alt="Languages">
-  <img src="https://img.shields.io/github/languages/top/muhammad-fiaz/StableGuard?style=plastic" alt="Top Language">
+- `chrome_plugin/background.js` creates context-menu items for a text selection, an image, and a video. A click opens `popup.html` and POSTs JSON to `http://localhost:5000/detect`.
+- `expectations.txt` (and the copy under `chrome_plugin/`) describes that JSON. `type` is `text`, `image`, or `video`. `content` is the selected text, or the media URL.
+- `server.py` loads the text model and the image models, then returns JSON with a `confidence` field from `/detect`.
+- `text_detection.py` defines `DesklibAIDetectionModel` and loads `desklib/ai-text-detector-v1.01` on CPU. `predict_single_text` scores one string.
+- `detect.py` loads CLIP (`openai/clip-vit-large-patch14`) and ViT (`google/vit-large-patch32-224-in21k`). It defines noise, edge, Fourier-magnitude, EXIF, color-histogram, and invisible-watermark checks, and `process_image` / `process_video` call `classify_image`. Video reads about one frame per second.
+- `requirements.txt` and `pyproject.toml` list Python dependencies. `chrome_plugin/` has no `manifest.json`.
 
-  <img src="https://img.shields.io/github/contributors/muhammad-fiaz/StableGuard?style=plastic" alt="Contributors">
-  <img src="https://img.shields.io/github/last-commit/muhammad-fiaz/StableGuard?style=plastic" alt="Last Commit">
-  <img src="https://img.shields.io/github/issues-pr/muhammad-fiaz/StableGuard?style=plastic" alt="Pull Requests">
+## Running
 
-</div>
+`server.py` calls `app.run(port=5000, debug=True)` when executed as a script.
 
-StableGuard is an AI-powered application designed to detect whether a given image or video is AI-generated, such as those created by stable diffusion models and other AI tools.
+`detect.py` accepts `--image`, `--video`, or `--gui`. With no flag it prints: use `--image`, `--video`, or `--gui`. `--gui` opens a Gradio page.
 
-> **Note:** The detection results may not always be accurate. AI-generated content detection is an evolving field, and false positives or false negatives are possible. Always verify the results with additional methods or human judgment when necessary.
-
-## Features
-- Detects AI-generated images and videos
-- Uses pre-trained machine learning models for detection
-- Provides confidence and accuracy metrics for classification
-- Supports both image and video processing
-
-## Requirements
-- Python 3.11+
-- PyTorch
-- OpenCV
-- NumPy
-- Pillow
-- Transformers
-- Accelerate
-- Datasets
-- Gradio
-- Huggingface Models
-
-## Installation
-1. Clone the repository:
-    ```sh
-    git clone https://github.com/muhammad-fiaz/StableGuard.git
-    cd StableGuard
-    ```
-
-2. Install the required packages:
-    ```sh
-    pip install -r requirements.txt
-    ```
-
-## Usage
-1. To detect AI-generated images:
-    ```sh
-    python detect.py --image path/to/image.jpg
-    ```
-
-2. To detect AI-generated videos:
-    ```sh
-    python detect.py --video path/to/video.mp4
-    ```
-3. To detect with GUI 
-    ```sh
-    python detect.py --gui
-    ```
-
-## License
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+`text_detection.py` scores two example strings when executed as a script.
