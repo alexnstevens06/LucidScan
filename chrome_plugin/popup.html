@@ -1,25 +1,43 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>AI Detection Result</title>
-    <link rel="stylesheet" type="text/css" href="popup.css">
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+  <meta charset="utf-8" />
+  <title>LucidScan</title>
+  <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
-    <div id="result-container">
-        <div class="header">
-            <h1>AI Detection Result</h1>
-            <p>Content Type: <span id="content-type">Waiting...</span></p>
-        </div>
-        <div class="score-container">
-            <div class="score-circle">
-                <span id="confidence-score">...</span>
-            </div>
-        </div>
-        <div class="footer">
-            <p id="confidence-label">Confidence Score</p>
-        </div>
-    </div>
-    <script src="popup.js"></script>
+  <main class="wrap">
+    <header>
+      <h1>LucidScan</h1>
+      <p class="tag">Browse-time <strong>local signal</strong> badges — not an authenticity verdict.</p>
+    </header>
+
+    <section class="card">
+      <label class="row">
+        <span>Badge mode</span>
+        <input type="checkbox" id="badge-toggle" checked />
+      </label>
+      <button type="button" id="enable-hosts" class="btn">Enable badges on sites</button>
+      <p id="status" class="muted">Inference: …</p>
+    </section>
+
+    <section class="card" id="last-scan-card">
+      <h2>Last scan</h2>
+      <div class="score-circle" aria-hidden="true"></div>
+      <p><span id="score-label">local score</span>: <strong id="confidence-score">—</strong></p>
+      <p class="muted">Type: <span id="content-type">—</span></p>
+    </section>
+
+    <section class="card about">
+      <h2>About / licenses</h2>
+      <ul>
+        <li>Default badge path (planned): Transformers.js + TMR text ONNX (MIT) and CLIP ViT-B/32 (MIT code; model-card deployed use out of scope).</li>
+        <li>Current build ships <strong>mock local scores</strong> so Load unpacked works offline.</li>
+        <li>Optional Flask + Desklib/CLIP-large remains a power-user desktop path — not the default badge stack.</li>
+        <li>Images are scored in-tab ephemerally; do not scrape or resell site media.</li>
+      </ul>
+    </section>
+  </main>
+  <script src="popup.js"></script>
 </body>
 </html>
