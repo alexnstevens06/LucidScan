@@ -1,76 +1,62 @@
 # LucidScan
 
-Local browse-time **signal** badges for Chrome (MV3), plus an optional Flask desktop path from TIDALHack 25.
+Local browse-time **signal** badges for Chrome (MV3, load unpacked, v0.4.0), plus an optional Flask desktop path from TIDALHack 25.
 
-Badges are a **local signal only** — not an authenticity verdict. The UI never claims “AI verified”, “100% human”, or similar.
-
+Badges are a **local signal only** from on-device models and local heuristics — not an authenticity verdict.
 
 ## Quick start (Load unpacked + Enable)
 
-```text
-1. chrome://extensions → Developer mode ON
-2. Load unpacked → select the chrome_plugin/ folder
-3. From chrome_plugin/: `./test/serve.sh`  (or `PORT=8765 python3 -m http.server 8765`)
-   then visit http://127.0.0.1:8765/test/sample.html
-4. Click the LucidScan icon → Enable badges on this site → Allow
-5. Confirm image corner pills / selection chip show “local score …”
-6. Optional: Enabled sites list → Disable / Clear all
-7. Optional: Pause badges on this site (keeps enable; hides badges) or Disable / Clear all
-8. Shortcut: Alt+Shift+L enables badges on the current http(s) site
+1. `chrome://extensions` → **Developer mode** on → **Load unpacked** → pick `chrome_plugin/`.
+2. Serve the sample page over http (Enable does not work on `file://`):
+   ```bash
+   cd chrome_plugin && ./test/serve.sh      # http://127.0.0.1:8765/test/sample.html
+   ```
+3. Open the sample page → LucidScan icon → **Enable badges on this site** → **Allow** (or `Alt+Shift+L`).
+4. Visible images get a corner pill (`…` → `local score N`); select ≥12 chars of text for a floating chip.
+5. First run downloads models from Hugging Face (progress shown in the popup under **Models**; **Retry model load** if it fails).
+6. **Pause badges on this site** hides badges but keeps the enable; **Resume** brings them back; **Disable** removes the site enable and tears badges down. **Clear all enabled sites** resets everything.
+
+Nothing is injected on any site until you enable it (no static `content_scripts`).
+
+## Features (how to verify: `docs/feature-map.md`)
+
+- **Inject-only per site:** optional host permission requested in the popup click (gesture-safe), then `scripting.registerContentScripts` for that origin only.
+- **Image badges:** visible images only (IntersectionObserver), closed Shadow DOM pills, src-hash score cache (~200 entries, 24h TTL, memory LRU + IndexedDB).
+- **Cheap prefilters (local heuristics):** tiny images, tiny data URIs, and near-flat images skip CLIP and show `local heuristics`.
+- **Selection chip:** follows the selection on scroll/resize/visualViewport changes; flips below if clipped; readable on light and dark pages.
+- **Models:** auto-warmup when the offscreen document starts; popup shows stage / % with Retry; **Cancel load watch** stops the progress UI (an in-flight download may still finish).
+- **SPA support:** history-hook rebinding only (no `webNavigation`).
+- **Zero `web_accessible_resources`**; no `addHostAccessRequest`.
+- **Fallback:** if models fail to load, badges show `local heuristics` (labeled fallback scorer) so the page stays usable.
+
+## Tests
+
+```bash
+npm test                 # = bash scripts/test.sh: syntax check + health_check.py + node:test unit tests (offline, no browser)
+python3 chrome_plugin/scripts/cdp_smoke.py   # optional: headless Chrome, Extensions.loadUnpacked, SW alive, 0 badges before Enable
 ```
 
-Badges never claim authenticity. First inference may download HF models into the browser cache.
+`health_check.py` checks manifest validity, zero WAR, no static `content_scripts`, no `webNavigation` / `addHostAccessRequest`, no vendored weights, and scans UI strings + README for claim words. Unit tests cover the URL restriction guard, origin patterns, hashing, prefilters, and cache LRU/TTL. The CDP smoke needs `websocket-client` and network for the sample images.
 
+## Known limits
 
-### Pass-2 behavior notes
-
-- **Gesture-safe enable:** the popup calls `chrome.permissions.request` directly in the click/tabs.query callback (no `await` before it), then asks the service worker to register/inject.
-- **Image score cache:** offscreen keeps an in-memory LRU plus IndexedDB (`lucidscan-cache`) keyed by src hash (cap ~200) so navigations reuse scores.
-- **Queue priority:** selection text scoring is not stuck behind the image queue; image jobs are low-priority and canceled on teardown/nav generation bump.
-- **iframes:** same-origin iframes may be scanned from the parent content script; **cross-origin iframes are not** unless that origin is separately enabled (we do not set `all_frames: true` by default).
-- **Anti-strip:** if a page removes badge host nodes, LucidScan re-attaches with exponential backoff a few times, then stops fighting (banking/anti-fraud pages).
-- **Model fail UX:** popup shows loading / unavailable / heuristics-only and offers **Retry model load**. Badges may show heuristics labels without authenticity claims.
-
-
-### Pass-3 behavior notes
-
-- **Zero WAR:** `web_accessible_resources` removed — WASM/Transformers stay extension-page-only; badges use closed Shadow DOM + inline CSS (no page-loaded assets).
-- **Cache:** image scores capped at ~200 with **24h TTL** eviction (memory LRU + IndexedDB).
-- **Pause:** per-site only (`pausedOrigins`) — does not revoke host permission or remove enable; **Disable** revokes.
-- **Restricted URLs:** Enable blocks `file://`, `chrome://`, `chrome-error://`, etc. Serve `test/sample.html` over http(s).
-- **Shortcut:** `Alt+Shift+L` → Enable badges on this site.
-- Still no `webNavigation`; no `addHostAccessRequest`.
-
-
-### Pass-4 behavior notes
-
-- **Model load progress:** popup shows stage/% while HF assets download; Cancel load watch stops UI polling (in-flight fetch may still finish).
-- **Cheap JS prefilters** (before CLIP): skip tiny images, tiny data-URIs, near-flat canvases → labeled **local heuristics** (not a verdict).
-- **Sample harness:** `chrome_plugin/test/serve.sh` serves the extension root over http for Enable-on-localhost.
-- **Selection chip:** repositions with visualViewport; flips below selection if clipped.
-
-## Chrome extension (primary)
-
-Load unpacked from `chrome_plugin/`:
-
-1. Open `chrome://extensions`
-2. Enable **Developer mode**
-3. **Load unpacked** → select the `chrome_plugin/` directory
-4. Open an `http`/`https` page (e.g. serve `chrome_plugin/test/sample.html` with `python3 -m http.server` from `chrome_plugin/`)
-5. Click the LucidScan action → **Enable badges on this site** (grants optional host permission for that origin and injects the content script)
-6. Visible images get a corner pill (`pending` → `local score N`); select text (≥12 chars) for a floating chip
-7. **Disable badges on this site** removes registration for that origin and tears down badges; **Pause badges (global)** hides badges on all enabled sites without revoking permissions
-9. Optional: **Load local models** (auto-warmup also runs when the offscreen document starts)
+- Cross-origin iframes are not scanned unless that origin is enabled separately; same-origin iframes may be.
+- Restricted pages (`chrome://`, `file://`, Web Store, `view-source:`, other extensions) cannot be enabled.
+- Cross-origin images that taint the canvas skip the flat-image prefilter and are sent by URL instead of a canvas copy.
+- First run needs network (~tens of MB text model + ~85 MB CLIP); later loads use the browser cache.
+- Granting host permission needs a real click, so automated tests stop at "0 badges before Enable".
+- Scores are an uncalibrated local signal, not a verdict.
 
 ### What badges mean
 
 | Label | Meaning |
 |-------|---------|
-| `pending` | Score in flight or unavailable |
+| `…` | Score in flight |
+| `local heuristics` | Prefilter or fallback scorer (models unavailable) |
 | `local score N` | Local heuristic/model **signal** (0–100 display). Not authenticity. |
 | `offline` | Coordinator unavailable |
 
-Current milestone (**M2/M3**): Transformers.js pipelines in an **offscreen document** (mock fallback if models unavailable). Architecture matches `docs/lucidscan-mv3-local.md`:
+Transformers.js pipelines run in an **offscreen document** (labeled heuristics fallback if models are unavailable). Architecture matches `docs/lucidscan-mv3-local.md`:
 
 - Content script = thin bridge (injected **only after** Enable badges on this site); **closed Shadow DOM** badges
 - `MutationObserver` + `IntersectionObserver` (visible images only)
@@ -83,7 +69,7 @@ Current milestone (**M2/M3**): Transformers.js pipelines in an **offscreen docum
 - **Text (M2):** Transformers.js + `onnx-community/tmr-ai-text-detector-ONNX` (q8), WebGPU → WASM, in the offscreen document
 - **Images (M3):** Transformers.js + CLIP ViT-B/32 (`Xenova/clip-vit-base-patch32`), IntersectionObserver visible-only, cache by `src` hash; content script sends an ephemeral canvas data URL when possible
 - **Runtime:** ORT WASM vendored under `chrome_plugin/lib/`; model weights download from Hugging Face on first use (browser cache). Popup → **Load local models** to warm up.
-- **Fallback:** If a pipeline fails to load, badges fall back to mock local scores (`mode: mock`) so the UX stays up.
+- **Fallback:** If a pipeline fails to load, badges fall back to labeled `local heuristics` scores so the UX stays up.
 - **Not** the default badge path: Desklib (~1.75GB) / Flask CLIP-large — optional power-user desktop stack only
 
 Set `chrome.storage.local.inferenceMode = "mock"` or `forceMock: true` to force heuristics without downloading models.
@@ -110,26 +96,9 @@ Weights are **not** shipped in git. On first inference (or popup → **Load loca
 
 Exact bytes vary by dtype/device (WebGPU fp16 vs WASM q8). Use a network connection the first time; later loads hit the browser cache.
 
-### Popup: Load local models
-
-1. Click the LucidScan puzzle-piece / action icon to open the popup.
-2. Ensure **Badge mode** is on.
-3. Click **Load local models** — status should move from idle/loading toward `text ready` / `image ready` (device `webgpu` or `wasm`).
-4. Then browse / open `test/sample.html` over **http(s)** (not only `file://` for content scripts).
-
-### Health check (no network)
-
-```bash
-python3 chrome_plugin/scripts/health_check.py
-```
-
 ### Automated smoke note (tower / CI)
 
-Google Chrome **137+ branded builds ignore `--load-extension`**. On tower we verified Load unpacked via CDP `Extensions.loadUnpacked` with `--enable-unsafe-extension-debugging` (Chrome 154): service worker started, offscreen document opened, content-script badge hosts appeared on the sample page (2 of 3 images; 24×24 skipped). Prefer Chromium / Chrome for Testing if you need `--load-extension` CLI. Manual Load unpacked in `chrome://extensions` remains the supported developer path.
-
-Automated CDP on branded Chrome can confirm **zero badges before enable**; granting optional host permission requires a real user gesture in the popup (automation cannot complete `permissions.request`).
-
-Note: Chrome offscreen documents may not expose `chrome.storage`; LucidScan guards writes there and keeps settings in the service worker / popup.
+Branded Chrome 137+ ignores `--load-extension`. `cdp_smoke.py` uses CDP `Extensions.loadUnpacked` with `--enable-unsafe-extension-debugging` (verified on Chrome 154). Chrome offscreen documents may not expose `chrome.storage`; LucidScan keeps settings in the service worker / popup.
 
 ## Optional Flask server (power user)
 
@@ -149,9 +118,11 @@ python server.py
 - `chrome_plugin/manifest.json` — MV3 load-unpacked root
 - `chrome_plugin/content.js` — Shadow DOM badges + observers
 - `chrome_plugin/background.js` — service worker / offscreen coordinator / context menus
-- `chrome_plugin/offscreen.html` + `offscreen.js` — local scoring (mock in M1)
+- `chrome_plugin/offscreen.html` + `offscreen.js` — local model scoring + progress + cache
 - `chrome_plugin/popup.*` — badge toggle, status, About
-- `chrome_plugin/test/sample.html` — manual badge smoke page
+- `chrome_plugin/test/` — `sample.html`, `serve.sh`, `unit/` node tests
+- `chrome_plugin/scripts/` — `health_check.py`, `cdp_smoke.py`
+- `docs/feature-map.md` — feature → how to verify
 - `docs/lucidscan-mv3-local.md` — architecture & model guidance
 - `expectations.txt` — legacy Flask JSON shape
 
@@ -159,7 +130,7 @@ python server.py
 
 0. Without enabling a site, sample page should show **no** badge hosts; after **Enable badges on this site**, badges appear.
 
-1. `python3 -c 'import json; m=json.load(open("chrome_plugin/manifest.json")); assert m["manifest_version"]==3'`
+1. `npm test` passes
 2. Load unpacked `chrome_plugin/` — service worker should not crash
 3. Serve sample page; confirm image pills + selection chip
 4. Confirm UI copy has no authenticity claims

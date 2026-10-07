@@ -195,7 +195,7 @@
     const pill = document.createElement("div");
     pill.className = "pill";
     pill.dataset.state = "pending";
-    pill.textContent = "pending";
+    pill.textContent = "…";
     pill.title = TITLE_SIGNAL;
     root.append(style, pill);
     return { host, root, pill };
