@@ -11,30 +11,67 @@ async function ensureOffscreen() {
     contextTypes: ["OFFSCREEN_DOCUMENT"],
     documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)],
   });
-  if (contexts && contexts.length > 0) return;
-  if (creatingOffscreen) {
-    await creatingOffscreen;
-    return;
+  if (!(contexts && contexts.length > 0)) {
+    if (creatingOffscreen) {
+      await creatingOffscreen;
+    } else {
+      creatingOffscreen = chrome.offscreen.createDocument({
+        url: OFFSCREEN_URL,
+        reasons: ["WORKERS"],
+        justification: "Run local signal scoring for browse-time badges without blocking the service worker.",
+      });
+      try {
+        await creatingOffscreen;
+      } finally {
+        creatingOffscreen = null;
+      }
+    }
   }
-  creatingOffscreen = chrome.offscreen.createDocument({
-    url: OFFSCREEN_URL,
-    reasons: ["WORKERS"],
-    justification: "Run local signal scoring for browse-time badges without blocking the service worker.",
+  // Offscreen is an ES module that imports Transformers.js — wait until it pings ready.
+  await waitForOffscreenReady();
+}
+
+async function waitForOffscreenReady(timeoutMs = 30000) {
+  const start = Date.now();
+  let lastErr = null;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const ping = await chrome.runtime.sendMessage({ type: "offscreen.ping" });
+      if (ping && ping.ready) return true;
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  console.warn("LucidScan: offscreen ready timeout", lastErr);
+  return false;
+}
+
+function getInferenceFlags() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(
+        { inferenceMode: "transformers", forceMock: false },
+        (r) => resolve({
+          inferenceMode: r.inferenceMode || "transformers",
+          forceMock: r.forceMock === true,
+        })
+      );
+    } catch (_) {
+      resolve({ inferenceMode: "transformers", forceMock: false });
+    }
   });
-  try {
-    await creatingOffscreen;
-  } finally {
-    creatingOffscreen = null;
-  }
 }
 
 async function scoreViaOffscreen(kind, payload) {
   await ensureOffscreen();
   const id = payload.id || `sw-${Date.now()}`;
+  const flags = await getInferenceFlags();
   return chrome.runtime.sendMessage({
     type: kind === "text" ? "offscreen.scoreText" : "offscreen.scoreImage",
     id,
     ...payload,
+    ...flags,
   });
 }
 
@@ -56,7 +93,7 @@ chrome.runtime.onInstalled.addListener(() => {
       contexts: ["video"],
     });
   });
-  chrome.storage.local.set({ badgeModeEnabled: true, inferenceMode: "mock" });
+  chrome.storage.local.set({ badgeModeEnabled: true, inferenceMode: "transformers" });
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -87,8 +124,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       try {
         await ensureOffscreen();
-        const status = await chrome.runtime.sendMessage({ type: "offscreen.getStatus" });
-        sendResponse(status || { mode: "mock" });
+        const flags = await getInferenceFlags();
+        const status = await chrome.runtime.sendMessage({ type: "offscreen.getStatus", ...flags });
+        sendResponse(status || { mode: flags.inferenceMode || "transformers" });
       } catch {
         sendResponse({ mode: "mock", text: "mock", image: "mock" });
       }
@@ -101,9 +139,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       try {
         await ensureOffscreen();
+        const flags = await getInferenceFlags();
         const result = await chrome.runtime.sendMessage({
           type: "offscreen.warmup",
           which: msg.which || "both",
+          ...flags,
         });
         sendResponse(result || { ok: false });
       } catch (err) {
@@ -197,6 +237,19 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
     width: 420,
     height: 360,
   });
+});
+
+
+// One-time soft migrate: M1 left inferenceMode=mock in storage; M2+ default is transformers.
+chrome.storage.local.get({ inferenceMode: null, _migratedInferenceMode: false }, (r) => {
+  if (!r._migratedInferenceMode && r.inferenceMode === "mock") {
+    chrome.storage.local.set({
+      inferenceMode: "transformers",
+      _migratedInferenceMode: true,
+    });
+  } else if (!r._migratedInferenceMode) {
+    chrome.storage.local.set({ _migratedInferenceMode: true });
+  }
 });
 
 ensureOffscreen().catch(() => {});

@@ -50,6 +50,38 @@ Set `chrome.storage.local.inferenceMode = "mock"` or `forceMock: true` to force 
 
 See `docs/lucidscan-mv3-local.md` for the full research pack.
 
+
+### First-run model download (size expectations)
+
+Weights are **not** shipped in git. On first inference (or popup → **Load local models**), Transformers.js downloads from Hugging Face into the browser cache:
+
+| Pipeline | Model id | Ballpark download |
+|----------|----------|-------------------|
+| Text (q8) | `onnx-community/tmr-ai-text-detector-ONNX` | on the order of **tens of MB** (RoBERTa-base ONNX q8) |
+| Images | `Xenova/clip-vit-base-patch32` | often cited ~**85 MB** class for CLIP ViT-B/32 ONNX |
+| Runtime (vendored) | `chrome_plugin/lib/*` | ~**22 MB** ORT WASM + Transformers.js bundle (already in the extension folder) |
+
+Exact bytes vary by dtype/device (WebGPU fp16 vs WASM q8). Use a network connection the first time; later loads hit the browser cache.
+
+### Popup: Load local models
+
+1. Click the LucidScan puzzle-piece / action icon to open the popup.
+2. Ensure **Badge mode** is on.
+3. Click **Load local models** — status should move from idle/loading toward `text ready` / `image ready` (device `webgpu` or `wasm`).
+4. Then browse / open `test/sample.html` over **http(s)** (not only `file://` for content scripts).
+
+### Health check (no network)
+
+```bash
+python3 chrome_plugin/scripts/health_check.py
+```
+
+### Automated smoke note (tower / CI)
+
+Google Chrome **137+ branded builds ignore `--load-extension`**. On tower we verified Load unpacked via CDP `Extensions.loadUnpacked` with `--enable-unsafe-extension-debugging` (Chrome 154): service worker started, offscreen document opened, content-script badge hosts appeared on the sample page (2 of 3 images; 24×24 skipped). Prefer Chromium / Chrome for Testing if you need `--load-extension` CLI. Manual Load unpacked in `chrome://extensions` remains the supported developer path.
+
+Note: Chrome offscreen documents may not expose `chrome.storage`; LucidScan guards writes there and keeps settings in the service worker / popup.
+
 ## Optional Flask server (power user)
 
 `chrome_plugin/background.js` may still `POST http://localhost:5000/detect` for **video** context-menu scans when the server is running.

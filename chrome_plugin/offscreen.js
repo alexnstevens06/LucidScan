@@ -43,6 +43,22 @@ function configureEnv() {
 
 configureEnv();
 
+function storageSet(obj) {
+  try {
+    if (chrome.storage && chrome.storage.local && chrome.storage.local.set) {
+      chrome.storage.local.set(obj);
+    }
+  } catch (_) {}
+}
+
+
+let offscreenReady = true; // module evaluated; pipelines lazy
+try {
+  document.documentElement.dataset.lucidOffscreen = "ready";
+  document.title = "LucidScan offscreen ready";
+} catch (_) {}
+chrome.runtime.sendMessage({ type: "offscreen.ready", ready: true }).catch(() => {});
+
 function hashStr(s) {
   let h = 2166136261;
   for (let i = 0; i < String(s).length; i++) {
@@ -79,29 +95,65 @@ function mockImageScore(key) {
   return result;
 }
 
-async function loadSettings() {
+async function loadSettings(overrides = null) {
   return new Promise((resolve) => {
-    try {
-      chrome.storage.local.get({ inferenceMode: "transformers", forceMock: false }, (r) => {
-        preferMock = r.forceMock === true || r.inferenceMode === "mock";
-        resolve();
+    const apply = (r) => {
+      preferMock = r.forceMock === true || r.inferenceMode === "mock";
+      resolve();
+    };
+    if (overrides && (overrides.inferenceMode != null || overrides.forceMock != null)) {
+      apply({
+        inferenceMode: overrides.inferenceMode ?? "transformers",
+        forceMock: overrides.forceMock === true,
       });
+      return;
+    }
+    try {
+      if (!chrome.storage || !chrome.storage.local) {
+        preferMock = false;
+        resolve();
+        return;
+      }
+      chrome.storage.local.get({ inferenceMode: "transformers", forceMock: false }, (r) => apply(r || {}));
     } catch (_) {
+      preferMock = false;
       resolve();
     }
   });
 }
 
-async function createPipe(task, model, dtype) {
-  // Prefer WebGPU; fall back to WASM (onnxruntime)
+async function canUseWebGPU() {
   try {
-    const pipe = await pipeline(task, model, { dtype, device: "webgpu" });
-    return { pipe, device: "webgpu" };
-  } catch (err) {
-    console.warn("[LucidScan] WebGPU unavailable, using WASM:", err?.message || err);
-    const pipe = await pipeline(task, model, { dtype, device: "wasm" });
-    return { pipe, device: "wasm" };
+    if (!navigator.gpu) return false;
+    const adapter = await navigator.gpu.requestAdapter();
+    return !!adapter;
+  } catch (_) {
+    return false;
   }
+}
+
+async function createPipe(task, model, dtype) {
+  // Prefer WebGPU only when an adapter exists; otherwise WASM (ORT).
+  const attempts = [];
+  if (await canUseWebGPU()) {
+    attempts.push({ device: "webgpu", dtype, label: "webgpu" });
+  }
+  attempts.push({ device: "wasm", dtype, label: "wasm" });
+  // Final fallback: let Transformers.js pick a backend
+  attempts.push({ dtype, label: "auto" });
+
+  let lastErr = null;
+  for (const opts of attempts) {
+    try {
+      const { label, ...pipelineOpts } = opts;
+      const pipe = await pipeline(task, model, pipelineOpts);
+      return { pipe, device: label };
+    } catch (err) {
+      lastErr = err;
+      console.warn("[LucidScan] pipeline attempt failed:", opts.label, err?.message || err);
+    }
+  }
+  throw lastErr || new Error("no pipeline backend available");
 }
 
 async function ensureTextPipe() {
@@ -123,7 +175,7 @@ async function ensureTextPipe() {
     textPipe = pipe;
     deviceUsed.text = device;
     textStatus = "ready";
-    chrome.storage.local.set({
+    storageSet({
       textModelStatus: "ready",
       textModelDevice: device,
     });
@@ -131,7 +183,7 @@ async function ensureTextPipe() {
   } catch (err) {
     textStatus = "error";
     textError = String(err?.message || err);
-    chrome.storage.local.set({ textModelStatus: "error", textModelError: textError });
+    storageSet({ textModelStatus: "error", textModelError: textError });
     throw err;
   }
 }
@@ -160,7 +212,7 @@ async function ensureImagePipe() {
     imagePipe = pipe;
     deviceUsed.image = device;
     imageStatus = "ready";
-    chrome.storage.local.set({
+    storageSet({
       imageModelStatus: "ready",
       imageModelDevice: device,
     });
@@ -168,7 +220,7 @@ async function ensureImagePipe() {
   } catch (err) {
     imageStatus = "error";
     imageError = String(err?.message || err);
-    chrome.storage.local.set({ imageModelStatus: "error", imageModelError: imageError });
+    storageSet({ imageModelStatus: "error", imageModelError: imageError });
     throw err;
   }
 }
@@ -203,8 +255,8 @@ function clamp01(n) {
   return Math.max(0.01, Math.min(0.99, Number(n) || 0.5));
 }
 
-async function scoreText(text) {
-  await loadSettings();
+async function scoreText(text, overrides = null) {
+  await loadSettings(overrides);
   const sample = String(text || "").slice(0, 4000);
   if (preferMock) return mockTextScore(sample);
   if (textStatus === "loading" && !textPipe) {
@@ -235,8 +287,8 @@ async function scoreText(text) {
   }
 }
 
-async function scoreImage({ src, dataUrl, cacheKey }) {
-  await loadSettings();
+async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
+  await loadSettings(overrides);
   const key = cacheKey || hashStr(dataUrl || src || "");
   if (imageCache.has(key)) {
     return { ...imageCache.get(key), cached: true };
@@ -265,7 +317,9 @@ async function scoreImage({ src, dataUrl, cacheKey }) {
     imageCache.set(key, result);
     // Persist small cache in session storage (bounded)
     try {
-      chrome.storage.session?.set?.({ [`img:${key}`]: { score, ts: Date.now() } });
+      if (chrome.storage && chrome.storage.session && chrome.storage.session.set) {
+      chrome.storage.session.set({ [`img:${key}`]: { score, ts: Date.now() } });
+    }
     } catch (_) {}
     return result;
   } catch (err) {
@@ -275,8 +329,8 @@ async function scoreImage({ src, dataUrl, cacheKey }) {
   }
 }
 
-async function warmup(which = "both") {
-  await loadSettings();
+async function warmup(which = "both", overrides = null) {
+  await loadSettings(overrides);
   const out = {};
   if (which === "text" || which === "both") {
     try {
@@ -317,7 +371,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
       if (msg.type === "offscreen.scoreText") {
-        const result = await scoreText(msg.text);
+        const result = await scoreText(msg.text, msg);
         sendResponse({ id: msg.id, ...result });
         return;
       }
@@ -326,17 +380,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           src: msg.src,
           dataUrl: msg.dataUrl,
           cacheKey: msg.cacheKey,
-        });
+        }, msg);
         sendResponse({ id: msg.id, ...result });
         return;
       }
+      if (msg.type === "offscreen.ping" || msg.type === "offscreen.ready") {
+        sendResponse({ ready: true, offscreenReady });
+        return;
+      }
       if (msg.type === "offscreen.getStatus") {
-        await loadSettings();
+        await loadSettings(msg);
         sendResponse(statusPayload());
         return;
       }
       if (msg.type === "offscreen.warmup") {
-        const warm = await warmup(msg.which || "both");
+        const warm = await warmup(msg.which || "both", msg);
         sendResponse({ ok: true, ...warm, ...statusPayload() });
         return;
       }
