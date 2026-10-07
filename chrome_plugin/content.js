@@ -1,5 +1,7 @@
 (() => {
   "use strict";
+  if (globalThis.__lucidScanContentLoaded) return;
+  globalThis.__lucidScanContentLoaded = true;
 
   const MIN_IMG = 48;
 
@@ -279,6 +281,13 @@
   window.addEventListener("resize", repositionChip);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") hideTextChip();
+  });
+
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === "teardownBadges") {
+      teardownAll();
+      globalThis.__lucidScanContentLoaded = false;
+    }
   });
 
   mo.observe(document.documentElement, { childList: true, subtree: true });

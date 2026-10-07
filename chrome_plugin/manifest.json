@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LucidScan",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Browse-time local signal badges for images and selected text using on-device models. Local signal only \u2014 not an authenticity verdict.",
   "permissions": [
     "storage",
@@ -31,19 +31,6 @@
     "default_popup": "popup.html",
     "default_title": "LucidScan"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "http://*/*",
-        "https://*/*"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "run_at": "document_idle",
-      "all_frames": false
-    }
-  ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },

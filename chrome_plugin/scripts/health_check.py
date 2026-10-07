@@ -52,8 +52,17 @@ def main() -> int:
             csp = (m.get("content_security_policy") or {}).get("extension_pages", "")
             if "wasm-unsafe-eval" not in csp:
                 errors.append("CSP extension_pages should allow wasm-unsafe-eval")
-            if not m.get("content_scripts"):
-                errors.append("content_scripts missing")
+            # Inject-only: must NOT declare broad static content_scripts
+            if m.get("content_scripts"):
+                errors.append(
+                    "content_scripts should be absent (inject-only after Enable badges on this site)"
+                )
+            perms = set(m.get("permissions") or [])
+            for need in ("scripting", "activeTab", "storage"):
+                if need not in perms:
+                    errors.append(f"permissions missing: {need}")
+            if not m.get("optional_host_permissions"):
+                errors.append("optional_host_permissions missing for per-site enable")
 
     # Scan UI sources for accuracy-claim strings (allow negation in comments/docs)
     for rel in ("popup.html", "popup.js", "background.js", "content.js", "offscreen.js"):

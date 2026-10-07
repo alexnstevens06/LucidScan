@@ -13,11 +13,13 @@
     </header>
 
     <section class="card">
-      <label class="row">
-        <span>Badge mode</span>
+      <p class="muted" id="site-line">Site: …</p>
+      <button type="button" id="enable-site" class="btn">Enable badges on this site</button>
+      <button type="button" id="disable-site" class="btn secondary">Disable badges on this site</button>
+      <label class="row" style="margin-top:10px">
+        <span>Pause badges (global)</span>
         <input type="checkbox" id="badge-toggle" checked />
       </label>
-      <button type="button" id="enable-hosts" class="btn">Enable badges on sites</button>
       <button type="button" id="warmup" class="btn secondary">Load local models</button>
       <p id="status" class="muted">Inference: …</p>
     </section>
@@ -32,7 +34,8 @@
     <section class="card about">
       <h2>About / licenses</h2>
       <ul>
-        <li>Default badge path: Transformers.js (@huggingface/transformers) with <code>onnx-community/tmr-ai-text-detector-ONNX</code> (MIT) and CLIP ViT-B/32 <code>Xenova/clip-vit-base-patch32</code> (CLIP code MIT; model-card deployed use out of scope).</li>
+        <li>Badges inject <strong>only after</strong> you enable them for the current site (optional host permission + content script registration).</li>
+        <li>Default models: Transformers.js + <code>onnx-community/tmr-ai-text-detector-ONNX</code> (MIT) and CLIP ViT-B/32 <code>Xenova/clip-vit-base-patch32</code> (CLIP code MIT; model-card deployed use out of scope).</li>
         <li>Models download from Hugging Face on first use into the browser cache (local/dev). WASM/ORT is vendored under <code>lib/</code>.</li>
         <li>Optional Flask + Desklib/CLIP-large remains a power-user desktop path — not the default badge stack.</li>
         <li>Images are scored in-tab ephemerally; do not scrape or resell site media.</li>

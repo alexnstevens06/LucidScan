@@ -6,6 +6,140 @@
 const OFFSCREEN_URL = "offscreen.html";
 let creatingOffscreen = null;
 
+const CONTENT_SCRIPT_ID = "lucidscan-badges";
+
+function originPatternFromUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return `${u.protocol}//${u.host}/*`;
+  } catch (_) {
+    return null;
+  }
+}
+
+function getEnabledOrigins() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({ enabledOrigins: [] }, (r) => {
+      const list = Array.isArray(r.enabledOrigins) ? r.enabledOrigins : [];
+      resolve([...new Set(list)].filter(Boolean));
+    });
+  });
+}
+
+async function setEnabledOrigins(origins) {
+  const cleaned = [...new Set(origins)].filter(Boolean).sort();
+  await chrome.storage.local.set({ enabledOrigins: cleaned });
+  return cleaned;
+}
+
+async function syncRegisteredContentScripts() {
+  const origins = await getEnabledOrigins();
+  try {
+    await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] });
+  } catch (_) {
+    // not registered yet
+  }
+  if (!origins.length) return { registered: false, matches: [] };
+  await chrome.scripting.registerContentScripts([
+    {
+      id: CONTENT_SCRIPT_ID,
+      js: ["content.js"],
+      matches: origins,
+      runAt: "document_idle",
+      allFrames: false,
+      persistAcrossSessions: true,
+    },
+  ]);
+  return { registered: true, matches: origins };
+}
+
+async function injectIntoTab(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: false },
+    files: ["content.js"],
+  });
+}
+
+async function teardownInTab(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "teardownBadges" });
+  } catch (_) {
+    // content script may not be present
+  }
+}
+
+async function enableBadgesForTab(tab) {
+  if (!tab || !tab.id || !tab.url) {
+    return { ok: false, error: "No active http(s) tab." };
+  }
+  const pattern = originPatternFromUrl(tab.url);
+  if (!pattern) {
+    return { ok: false, error: "Badges only work on http(s) pages." };
+  }
+  const granted = await chrome.permissions.request({ origins: [pattern] });
+  if (!granted) {
+    return { ok: false, granted: false, origin: pattern, error: "Permission denied." };
+  }
+  const origins = await getEnabledOrigins();
+  if (!origins.includes(pattern)) origins.push(pattern);
+  await setEnabledOrigins(origins);
+  const reg = await syncRegisteredContentScripts();
+  try {
+    await injectIntoTab(tab.id);
+  } catch (err) {
+    return {
+      ok: true,
+      granted: true,
+      origin: pattern,
+      injected: false,
+      matches: reg.matches,
+      error: String(err && err.message ? err.message : err),
+    };
+  }
+  return { ok: true, granted: true, origin: pattern, injected: true, matches: reg.matches };
+}
+
+async function disableBadgesForTab(tab) {
+  if (!tab || !tab.url) {
+    return { ok: false, error: "No active http(s) tab." };
+  }
+  const pattern = originPatternFromUrl(tab.url);
+  if (!pattern) {
+    return { ok: false, error: "Not an http(s) page." };
+  }
+  const origins = (await getEnabledOrigins()).filter((o) => o !== pattern);
+  await setEnabledOrigins(origins);
+  const reg = await syncRegisteredContentScripts();
+  if (tab.id) await teardownInTab(tab.id);
+  // Best-effort: drop host permission for this origin
+  try {
+    await chrome.permissions.remove({ origins: [pattern] });
+  } catch (_) {}
+  return { ok: true, origin: pattern, matches: reg.matches };
+}
+
+async function getSiteBadgeStatus(tab) {
+  const origins = await getEnabledOrigins();
+  const pattern = tab && tab.url ? originPatternFromUrl(tab.url) : null;
+  const enabled = !!(pattern && origins.includes(pattern));
+  let permission = false;
+  if (pattern) {
+    try {
+      permission = await chrome.permissions.contains({ origins: [pattern] });
+    } catch (_) {}
+  }
+  return {
+    origin: pattern,
+    enabled,
+    permission,
+    enabledOrigins: origins,
+    tabUrl: tab && tab.url ? tab.url : null,
+  };
+}
+
+
+
 async function ensureOffscreen() {
   const contexts = await chrome.runtime.getContexts({
     contextTypes: ["OFFSCREEN_DOCUMENT"],
@@ -93,7 +227,12 @@ chrome.runtime.onInstalled.addListener(() => {
       contexts: ["video"],
     });
   });
-  chrome.storage.local.set({ badgeModeEnabled: true, inferenceMode: "transformers" });
+  chrome.storage.local.set({
+    badgeModeEnabled: true,
+    inferenceMode: "transformers",
+    enabledOrigins: [],
+  });
+  syncRegisteredContentScripts().catch((e) => console.warn("register scripts", e));
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -153,15 +292,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === "requestBadgeHosts") {
+  if (msg.type === "enableBadgesForSite") {
     (async () => {
       try {
-        const granted = await chrome.permissions.request({
-          origins: ["http://*/*", "https://*/*"],
-        });
-        sendResponse({ granted: !!granted });
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const result = await enableBadgesForTab(tab);
+        sendResponse(result);
       } catch (err) {
-        sendResponse({ granted: false, error: String(err) });
+        sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "disableBadgesForSite") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const result = await disableBadgesForTab(tab);
+        sendResponse(result);
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "getSiteBadgeStatus") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        sendResponse(await getSiteBadgeStatus(tab));
+      } catch (err) {
+        sendResponse({ error: String(err && err.message ? err.message : err) });
       }
     })();
     return true;
@@ -253,3 +416,4 @@ chrome.storage.local.get({ inferenceMode: null, _migratedInferenceMode: false },
 });
 
 ensureOffscreen().catch(() => {});
+syncRegisteredContentScripts().catch((e) => console.warn("LucidScan script sync", e));

@@ -11,9 +11,11 @@ Load unpacked from `chrome_plugin/`:
 1. Open `chrome://extensions`
 2. Enable **Developer mode**
 3. **Load unpacked** → select the `chrome_plugin/` directory
-4. Open any `http`/`https` page (or serve `chrome_plugin/test/sample.html` with `python3 -m http.server`)
-5. Visible images get a corner pill (`pending` → `local score N`); select text (≥12 chars) for a floating chip
-6. Popup: toggle **Badge mode**, optionally **Enable badges on sites** (optional host permissions), view About/licenses
+4. Open an `http`/`https` page (e.g. serve `chrome_plugin/test/sample.html` with `python3 -m http.server` from `chrome_plugin/`)
+5. Click the LucidScan action → **Enable badges on this site** (grants optional host permission for that origin and injects the content script)
+6. Visible images get a corner pill (`pending` → `local score N`); select text (≥12 chars) for a floating chip
+7. **Disable badges on this site** removes registration for that origin and tears down badges; **Pause badges (global)** hides badges on all enabled sites without revoking permissions
+8. Optional: **Load local models** (auto-warmup also runs when the offscreen document starts)
 
 ### What badges mean
 
@@ -25,7 +27,7 @@ Load unpacked from `chrome_plugin/`:
 
 Current milestone (**M2/M3**): Transformers.js pipelines in an **offscreen document** (mock fallback if models unavailable). Architecture matches `docs/lucidscan-mv3-local.md`:
 
-- Content script = thin bridge; **closed Shadow DOM** badges
+- Content script = thin bridge (injected **only after** Enable badges on this site); **closed Shadow DOM** badges
 - `MutationObserver` + `IntersectionObserver` (visible images only)
 - `selectionchange` + Range floating chip for text
 - Service worker coordinates; inference in offscreen
@@ -80,6 +82,8 @@ python3 chrome_plugin/scripts/health_check.py
 
 Google Chrome **137+ branded builds ignore `--load-extension`**. On tower we verified Load unpacked via CDP `Extensions.loadUnpacked` with `--enable-unsafe-extension-debugging` (Chrome 154): service worker started, offscreen document opened, content-script badge hosts appeared on the sample page (2 of 3 images; 24×24 skipped). Prefer Chromium / Chrome for Testing if you need `--load-extension` CLI. Manual Load unpacked in `chrome://extensions` remains the supported developer path.
 
+Automated CDP on branded Chrome can confirm **zero badges before enable**; granting optional host permission requires a real user gesture in the popup (automation cannot complete `permissions.request`).
+
 Note: Chrome offscreen documents may not expose `chrome.storage`; LucidScan guards writes there and keeps settings in the service worker / popup.
 
 ## Optional Flask server (power user)
@@ -107,6 +111,8 @@ python server.py
 - `expectations.txt` — legacy Flask JSON shape
 
 ## Manual done-check
+
+0. Without enabling a site, sample page should show **no** badge hosts; after **Enable badges on this site**, badges appear.
 
 1. `python3 -c 'import json; m=json.load(open("chrome_plugin/manifest.json")); assert m["manifest_version"]==3'`
 2. Load unpacked `chrome_plugin/` — service worker should not crash
