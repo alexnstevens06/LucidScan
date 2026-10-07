@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LucidScan",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Browse-time local signal badges for images and selected text using on-device models. Local signal only \u2014 not an authenticity verdict.",
   "permissions": [
     "storage",

@@ -20,6 +20,16 @@ Badges are a **local signal only** — not an authenticity verdict. The UI never
 
 Badges never claim authenticity. First inference may download HF models into the browser cache.
 
+
+### Pass-2 behavior notes
+
+- **Gesture-safe enable:** the popup calls `chrome.permissions.request` directly in the click/tabs.query callback (no `await` before it), then asks the service worker to register/inject.
+- **Image score cache:** offscreen keeps an in-memory LRU plus IndexedDB (`lucidscan-cache`) keyed by src hash (cap ~200) so navigations reuse scores.
+- **Queue priority:** selection text scoring is not stuck behind the image queue; image jobs are low-priority and canceled on teardown/nav generation bump.
+- **iframes:** same-origin iframes may be scanned from the parent content script; **cross-origin iframes are not** unless that origin is separately enabled (we do not set `all_frames: true` by default).
+- **Anti-strip:** if a page removes badge host nodes, LucidScan re-attaches with exponential backoff a few times, then stops fighting (banking/anti-fraud pages).
+- **Model fail UX:** popup shows loading / unavailable / heuristics-only and offers **Retry model load**. Badges may show heuristics labels without authenticity claims.
+
 ## Chrome extension (primary)
 
 Load unpacked from `chrome_plugin/`:

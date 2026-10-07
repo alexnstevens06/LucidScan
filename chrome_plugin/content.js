@@ -12,8 +12,10 @@
   let badgeModeEnabled = true;
   let seq = 0;
   let inFlight = 0;
+  let jobGeneration = 0;
   const pending = new Map();
-  const scoreQueue = [];
+  const highQueue = []; // text / interactive
+  const lowQueue = []; // images
   const scoredImgs = new WeakMap();
   const imgHosts = new Map();
   let textChip = null;
@@ -205,8 +207,8 @@
   });
 
   function pumpQueue() {
-    while (inFlight < MAX_CONCURRENT && scoreQueue.length) {
-      const job = scoreQueue.shift();
+    while (inFlight < MAX_CONCURRENT && (highQueue.length || lowQueue.length)) {
+      const job = highQueue.length ? highQueue.shift() : lowQueue.shift();
       inFlight++;
       Promise.resolve()
         .then(job)
@@ -221,7 +223,9 @@
   function enqueueImage(img) {
     if (!badgeModeEnabled || !img || scoredImgs.has(img) || isSkippableImg(img)) return;
     scoredImgs.set(img, true);
-    scoreQueue.push(async () => {
+    const gen = jobGeneration;
+    lowQueue.push(async () => {
+      if (gen !== jobGeneration || !badgeModeEnabled) return;
       if (!badgeModeEnabled || !img.isConnected) return;
       let entry = imgHosts.get(img);
       if (!entry) {
@@ -266,7 +270,31 @@
   function scanImages() {
     if (!badgeModeEnabled) return;
     document.querySelectorAll("img").forEach(observeImg);
+    scanSameOriginIframes();
   }
+
+  function scanSameOriginIframes() {
+    if (!badgeModeEnabled) return;
+    let frames;
+    try {
+      frames = document.querySelectorAll("iframe");
+    } catch (_) {
+      return;
+    }
+    for (const frame of frames) {
+      try {
+        const doc = frame.contentDocument;
+        if (!doc) continue; // cross-origin — needs its own host grant + all_frames
+        doc.querySelectorAll("img").forEach((img) => {
+          // Observe from parent IO only works for parent-viewport; enqueue directly if visible-ish
+          observeImg(img);
+        });
+      } catch (_) {
+        // cross-origin access denied — expected
+      }
+    }
+  }
+
 
   function flushMutations() {
     moQueued = false;
@@ -334,7 +362,18 @@
     textChipLabel.textContent = "pending";
     textChipLabel.title = TITLE_SIGNAL;
 
-    const result = await requestScore("scoreText", { text: text.slice(0, 4000) });
+    const gen = jobGeneration;
+    const result = await new Promise((resolve) => {
+      highQueue.unshift(async () => {
+        if (gen !== jobGeneration || !badgeModeEnabled) {
+          resolve({ label: "pending", state: "pending" });
+          return;
+        }
+        resolve(await requestScore("scoreText", { text: text.slice(0, 4000) }));
+      });
+      pumpQueue();
+    });
+    if (gen !== jobGeneration) return;
     if (!window.getSelection() || String(window.getSelection()).trim() !== text) return;
     paintPill(textChipLabel, result);
   }
@@ -354,7 +393,9 @@
   }
 
   function teardownAll(hard = false) {
-    scoreQueue.length = 0;
+    highQueue.length = 0;
+    lowQueue.length = 0;
+    jobGeneration++;
     for (const { host } of imgHosts.values()) host.remove();
     imgHosts.clear();
     hideTextChip();
@@ -365,14 +406,48 @@
     if (hard) {
       try { io.disconnect(); } catch (_) {}
       try { mo.disconnect(); } catch (_) {}
+      try { stripObserver.disconnect(); } catch (_) {}
     }
   }
+
+
+  // Re-attach badges if a page strips our host nodes (anti-extension). Back off; don't fight forever.
+  let stripStrikes = 0;
+  const stripSeen = new WeakSet();
+  const stripObserver = new MutationObserver((mutations) => {
+    if (!badgeModeEnabled || stripStrikes > 8) return;
+    let stripped = false;
+    for (const m of mutations) {
+      for (const n of m.removedNodes) {
+        if (n.nodeType === 1 && (n.hasAttribute?.(BADGE_ATTR) || n.querySelector?.(`[${BADGE_ATTR}]`))) {
+          stripped = true;
+        }
+      }
+    }
+    if (!stripped) return;
+    stripStrikes++;
+    const delay = Math.min(4000, 250 * 2 ** Math.min(stripStrikes, 5));
+    setTimeout(() => {
+      if (!badgeModeEnabled) return;
+      // Clear weak scored markers for visible imgs missing hosts, then rescan
+      for (const img of document.querySelectorAll("img")) {
+        if (!imgHosts.has(img) && !isSkippableImg(img)) {
+          try { scoredImgs.delete(img); } catch (_) {}
+          observeImg(img);
+        }
+      }
+    }, delay);
+  });
 
   function ensureObservers() {
     try {
       mo.observe(document.documentElement, { childList: true, subtree: true });
     } catch (_) {}
+    try {
+      stripObserver.observe(document.documentElement, { childList: true, subtree: true });
+    } catch (_) {}
   }
+
 
   function rebindAfterSoftNav() {
     if (!badgeModeEnabled) return;

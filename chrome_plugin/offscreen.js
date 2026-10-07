@@ -18,7 +18,115 @@ const IMAGE_LABELS = [
   "a synthetic computer-generated or AI-generated image",
 ];
 
-const imageCache = new Map(); // hash -> result
+const imageCache = new Map(); // hash -> result (memory)
+const IMAGE_CACHE_MAX = 200;
+const IDB_NAME = "lucidscan-cache";
+const IDB_STORE = "imageScores";
+let idbReady = null;
+
+function memoryCacheSet(key, result) {
+  if (imageCache.has(key)) imageCache.delete(key);
+  imageCache.set(key, result);
+  while (imageCache.size > IMAGE_CACHE_MAX) {
+    const oldest = imageCache.keys().next().value;
+    imageCache.delete(oldest);
+  }
+}
+
+function openIdb() {
+  if (idbReady) return idbReady;
+  idbReady = new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE, { keyPath: "key" });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
+  });
+  return idbReady;
+}
+
+async function idbGet(key) {
+  try {
+    const db = await openIdb();
+    return await new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const req = tx.objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+async function idbPut(key, result) {
+  try {
+    const db = await openIdb();
+    await new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      const store = tx.objectStore(IDB_STORE);
+      store.put({ key, result, ts: Date.now() });
+      // Opportunistic trim: count + delete oldest if over cap
+      const countReq = store.count();
+      countReq.onsuccess = () => {
+        const n = countReq.result || 0;
+        if (n <= IMAGE_CACHE_MAX) {
+          resolve();
+          return;
+        }
+        const cursorReq = store.openCursor();
+        let toDelete = n - IMAGE_CACHE_MAX;
+        cursorReq.onsuccess = (ev) => {
+          const cursor = ev.target.result;
+          if (!cursor || toDelete <= 0) {
+            resolve();
+            return;
+          }
+          store.delete(cursor.primaryKey);
+          toDelete--;
+          cursor.continue();
+        };
+        cursorReq.onerror = () => resolve();
+      };
+      countReq.onerror = () => resolve();
+    });
+  } catch (_) {}
+}
+
+async function cacheGet(key) {
+  if (imageCache.has(key)) {
+    const hit = imageCache.get(key);
+    // refresh LRU order
+    imageCache.delete(key);
+    imageCache.set(key, hit);
+    return { ...hit, cached: true };
+  }
+  const row = await idbGet(key);
+  if (row && row.result) {
+    memoryCacheSet(key, row.result);
+    return { ...row.result, cached: true };
+  }
+  return null;
+}
+
+async function cacheSet(key, result) {
+  const slim = {
+    score: result.score,
+    label: result.label || "local score",
+    state: result.state || "signal",
+    mode: result.mode || "transformers",
+  };
+  memoryCacheSet(key, slim);
+  await idbPut(key, slim);
+}
 let textPipe = null;
 let imagePipe = null;
 let textStatus = "idle"; // idle | loading | ready | error
@@ -91,7 +199,7 @@ function mockImageScore(key) {
   const n = parseInt(hashStr(key).slice(0, 6), 16) || 0;
   const score = 0.2 + (n % 600) / 1000;
   const result = { score, label: "local score", state: "signal", mode: "mock" };
-  imageCache.set(key, result);
+  memoryCacheSet(key, result);
   return result;
 }
 
@@ -290,11 +398,12 @@ async function scoreText(text, overrides = null) {
 async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
   await loadSettings(overrides);
   const key = cacheKey || hashStr(dataUrl || src || "");
-  if (imageCache.has(key)) {
-    return { ...imageCache.get(key), cached: true };
-  }
+  const cached = await cacheGet(key);
+  if (cached) return cached;
   if (preferMock) {
-    return mockImageScore(key);
+    const result = mockImageScore(key);
+    await cacheSet(key, result);
+    return result;
   }
   if (imageStatus === "loading" && !imagePipe) {
     ensureImagePipe().catch(() => {});
@@ -314,13 +423,7 @@ async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
       device: deviceUsed.image,
       model: IMAGE_MODEL,
     };
-    imageCache.set(key, result);
-    // Persist small cache in session storage (bounded)
-    try {
-      if (chrome.storage && chrome.storage.session && chrome.storage.session.set) {
-      chrome.storage.session.set({ [`img:${key}`]: { score, ts: Date.now() } });
-    }
-    } catch (_) {}
+    await cacheSet(key, result);
     return result;
   } catch (err) {
     console.warn("[LucidScan] image pipeline failed, mock fallback:", err);

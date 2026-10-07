@@ -69,6 +69,46 @@ async function teardownInTab(tabId) {
   }
 }
 
+async function activateBadgesForOrigin(pattern, tabId) {
+  if (!pattern) return { ok: false, error: "Missing origin pattern." };
+  // Permission must already be granted (popup called permissions.request in the gesture).
+  let permitted = false;
+  try {
+    permitted = await chrome.permissions.contains({ origins: [pattern] });
+  } catch (_) {}
+  if (!permitted) {
+    return {
+      ok: false,
+      granted: false,
+      origin: pattern,
+      error: "Host permission missing — click Enable again (gesture required).",
+    };
+  }
+  const origins = await getEnabledOrigins();
+  if (!origins.includes(pattern)) origins.push(pattern);
+  await setEnabledOrigins(origins);
+  const reg = await syncRegisteredContentScripts();
+  let injected = false;
+  let injectError = null;
+  if (tabId) {
+    try {
+      await injectIntoTab(tabId);
+      injected = true;
+    } catch (err) {
+      injectError = String(err && err.message ? err.message : err);
+    }
+  }
+  return {
+    ok: true,
+    granted: true,
+    origin: pattern,
+    injected,
+    matches: reg.matches,
+    error: injectError || undefined,
+  };
+}
+
+/** @deprecated gesture-unsafe if awaits precede request — prefer popup request + activateBadgesForOrigin */
 async function enableBadgesForTab(tab) {
   if (!tab || !tab.id || !tab.url) {
     return { ok: false, error: "No active http(s) tab." };
@@ -77,27 +117,12 @@ async function enableBadgesForTab(tab) {
   if (!pattern) {
     return { ok: false, error: "Badges only work on http(s) pages." };
   }
+  // First statement after sync checks: request() — still fragile after tabs.query await in caller.
   const granted = await chrome.permissions.request({ origins: [pattern] });
   if (!granted) {
     return { ok: false, granted: false, origin: pattern, error: "Permission denied." };
   }
-  const origins = await getEnabledOrigins();
-  if (!origins.includes(pattern)) origins.push(pattern);
-  await setEnabledOrigins(origins);
-  const reg = await syncRegisteredContentScripts();
-  try {
-    await injectIntoTab(tab.id);
-  } catch (err) {
-    return {
-      ok: true,
-      granted: true,
-      origin: pattern,
-      injected: false,
-      matches: reg.matches,
-      error: String(err && err.message ? err.message : err),
-    };
-  }
-  return { ok: true, granted: true, origin: pattern, injected: true, matches: reg.matches };
+  return activateBadgesForOrigin(pattern, tab.id);
 }
 
 async function disableBadgesForTab(tab) {
@@ -331,6 +356,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "enableBadgesForSite") {
     (async () => {
       try {
+        // Prefer origin/tabId from popup (popup already called permissions.request in the gesture).
+        if (msg.origin && msg.permissionGranted) {
+          sendResponse(await activateBadgesForOrigin(msg.origin, msg.tabId || null));
+          return;
+        }
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         const result = await enableBadgesForTab(tab);
         sendResponse(result);
@@ -475,3 +505,19 @@ chrome.storage.local.get({ inferenceMode: null, _migratedInferenceMode: false },
 
 ensureOffscreen().catch(() => {});
 syncRegisteredContentScripts().catch((e) => console.warn("LucidScan script sync", e));
+
+
+chrome.permissions.onAdded.addListener((perm) => {
+  if (perm && perm.origins && perm.origins.length) {
+    syncRegisteredContentScripts().catch(() => {});
+  }
+});
+chrome.permissions.onRemoved.addListener(async (perm) => {
+  if (!perm || !perm.origins) return;
+  const origins = await getEnabledOrigins();
+  const next = origins.filter((o) => !perm.origins.includes(o));
+  if (next.length !== origins.length) {
+    await setEnabledOrigins(next);
+    await syncRegisteredContentScripts();
+  }
+});

@@ -35,7 +35,8 @@
       </label>
       <p class="hint-block">Pause does <strong>not</strong> disable a site. Use Disable / Clear all to stop injection.</p>
       <button type="button" id="warmup" class="btn secondary">Load local models</button>
-      <p id="model-status" class="muted">Models: …</p>
+      <button type="button" id="retry-models" class="btn secondary">Retry model load</button>
+      <p id="model-status" class="muted" data-state="unknown">Models: …</p>
     </section>
 
     <section class="card" id="last-scan-card">
@@ -45,12 +46,15 @@
       <p class="muted">Type: <span id="content-type">—</span></p>
     </section>
 
-    <section class="card about">
-      <h2>About / licenses</h2>
+    <section class="card about" id="licenses">
+      <h2>About / licenses (local-dev)</h2>
       <ul>
-        <li>Badges inject <strong>only after</strong> <em>Enable badges on this site</em>.</li>
-        <li>Models: Transformers.js + TMR ONNX (MIT) and CLIP ViT-B/32 (CLIP code MIT; model-card deployed use out of scope).</li>
-        <li>First run downloads weights from Hugging Face into the browser cache (local/dev).</li>
+        <li>Badges inject <strong>only after</strong> <em>Enable badges on this site</em> (optional host permission).</li>
+        <li><strong>Transformers.js</strong> — Apache-2.0; ORT WASM vendored under <code>lib/</code>.</li>
+        <li><strong>TMR text ONNX</strong> (<code>onnx-community/tmr-ai-text-detector-ONNX</code>) — MIT.</li>
+        <li><strong>CLIP ViT-B/32</strong> (<code>Xenova/clip-vit-base-patch32</code>) — CLIP <em>code</em> MIT; OpenAI CLIP <strong>model card</strong> treats deployed use as out of scope. LucidScan is local/dev signal tooling only.</li>
+        <li>First run downloads weights from Hugging Face into the browser cache — not vendored in git.</li>
+        <li>Cross-origin iframes are not scanned unless that frame’s origin is separately enabled; same-origin frames may be scanned.</li>
         <li>Do not scrape or resell site media — scoring is in-tab and ephemeral.</li>
       </ul>
     </section>

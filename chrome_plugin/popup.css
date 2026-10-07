@@ -130,3 +130,7 @@ h2 {
 .about ul { margin: 0; padding-left: 1.1rem; color: var(--muted); }
 .about li { margin-bottom: 6px; }
 code { font-size: 11px; color: #b8d4ff; }
+
+#model-status[data-state="loading"] { color: #c9d7ff; }
+#model-status[data-state="error"] { color: #ffc9a0; }
+#model-status[data-state="ok"] { color: #b8f0d4; }

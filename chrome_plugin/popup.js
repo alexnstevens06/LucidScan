@@ -28,12 +28,23 @@ function formatModelStatus(resp) {
   const td = resp.textDevice ? `/${resp.textDevice}` : "";
   const id = resp.imageDevice ? `/${resp.imageDevice}` : "";
   let line = `Models: ${mode} — text ${t}${td}, image ${i}${id}`;
-  if (t === "error" || i === "error") {
-    line += " · models unavailable — local heuristics only";
-  } else if (mode === "mock") {
-    line += " · heuristics fallback";
+  if (t === "loading" || i === "loading") {
+    line = `Models: loading (first run may download from Hugging Face)…`;
+  } else if (t === "error" || i === "error" || mode === "mock") {
+    line = `Models unavailable — using local heuristics only (not authenticity).`;
+    if (resp.textError) line += ` Text: ${String(resp.textError).slice(0, 80)}`;
   }
   return line;
+}
+
+function originPatternFromUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return `${u.protocol}//${u.host}/*`;
+  } catch (_) {
+    return null;
+  }
 }
 
 function renderSiteList(origins) {
@@ -55,9 +66,7 @@ function renderSiteList(origins) {
     btn.className = "btn tiny";
     btn.textContent = "Disable";
     btn.addEventListener("click", () => {
-      chrome.runtime.sendMessage({ type: "disableBadgeOrigin", origin }, () => {
-        refreshAll();
-      });
+      chrome.runtime.sendMessage({ type: "disableBadgeOrigin", origin }, () => refreshAll());
     });
     li.append(span, btn);
     ul.appendChild(li);
@@ -77,7 +86,6 @@ function refreshSiteStatus() {
       return;
     }
     renderSiteList(resp && resp.enabledOrigins);
-
     if (!resp || !resp.origin) {
       originEl.textContent = "Open an http(s) page, then enable here.";
       originEl.title = "";
@@ -89,12 +97,10 @@ function refreshSiteStatus() {
       disableBtn.hidden = true;
       return;
     }
-
     originEl.textContent = resp.origin;
     originEl.title = resp.tabUrl || resp.origin;
     enableBtn.disabled = false;
     disableBtn.disabled = false;
-
     if (resp.enabled) {
       stateEl.textContent = "Badges ON for this site";
       stateEl.dataset.state = "on";
@@ -114,9 +120,17 @@ function refreshModels() {
   chrome.runtime.sendMessage({ type: "getInferenceStatus" }, (resp) => {
     if (chrome.runtime.lastError) {
       modelStatus.textContent = "Models: starting…";
+      modelStatus.dataset.state = "loading";
       return;
     }
     modelStatus.textContent = formatModelStatus(resp);
+    const bad =
+      !resp ||
+      resp.mode === "mock" ||
+      resp.text === "error" ||
+      resp.image === "error";
+    const loading = resp && (resp.text === "loading" || resp.image === "loading");
+    modelStatus.dataset.state = loading ? "loading" : bad ? "error" : "ok";
   });
 }
 
@@ -132,6 +146,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const disableBtn = document.getElementById("disable-site");
   const clearAll = document.getElementById("clear-all");
   const warmupBtn = document.getElementById("warmup");
+  const retryBtn = document.getElementById("retry-models");
 
   chrome.storage.local.get({ badgeModeEnabled: true, lastScan: null }, (r) => {
     toggle.checked = r.badgeModeEnabled !== false;
@@ -146,20 +161,55 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   enableBtn.addEventListener("click", () => {
-    status.textContent = "Requesting permission and injecting…";
-    chrome.runtime.sendMessage({ type: "enableBadgesForSite" }, (resp) => {
-      if (chrome.runtime.lastError) {
-        status.textContent = chrome.runtime.lastError.message;
+    status.textContent = "Requesting site permission…";
+    // Gesture-safe ladder (Diligence pack):
+    // 1) tabs.query callback is still in the user-gesture chain
+    // 2) permissions.request MUST be the first async permissions call (no await before it)
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs && tabs[0];
+      if (!tab || !tab.url) {
+        status.textContent = "No active http(s) tab.";
         return;
       }
-      if (resp && resp.ok) {
-        status.textContent = resp.injected
-          ? `Enabled on ${resp.origin}`
-          : `Enabled on ${resp.origin} — reload if badges missing`;
-      } else {
-        status.textContent = (resp && resp.error) || "Enable failed.";
+      const origin = originPatternFromUrl(tab.url);
+      if (!origin) {
+        status.textContent = "Badges only work on http(s) pages.";
+        return;
       }
-      refreshAll();
+      // First chrome.permissions.* call in this turn = request (not contains).
+      chrome.permissions.request({ origins: [origin] }, (granted) => {
+        if (chrome.runtime.lastError) {
+          status.textContent = chrome.runtime.lastError.message;
+          return;
+        }
+        if (!granted) {
+          status.textContent = "Permission denied for this site.";
+          return;
+        }
+        status.textContent = "Permission OK — injecting…";
+        chrome.runtime.sendMessage(
+          {
+            type: "enableBadgesForSite",
+            origin,
+            tabId: tab.id,
+            permissionGranted: true,
+          },
+          (resp) => {
+            if (chrome.runtime.lastError) {
+              status.textContent = chrome.runtime.lastError.message;
+              return;
+            }
+            if (resp && resp.ok) {
+              status.textContent = resp.injected
+                ? `Enabled on ${resp.origin}`
+                : `Enabled on ${resp.origin} — reload if badges missing`;
+            } else {
+              status.textContent = (resp && resp.error) || "Enable failed.";
+            }
+            refreshAll();
+          }
+        );
+      });
     });
   });
 
@@ -183,23 +233,31 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  warmupBtn.addEventListener("click", () => {
+  function runWarmup(which) {
     status.textContent = "Loading models (HF download on first run)…";
-    chrome.runtime.sendMessage({ type: "warmupModels", which: "both" }, (resp) => {
+    document.getElementById("model-status").dataset.state = "loading";
+    document.getElementById("model-status").textContent =
+      "Models: loading (first run may download from Hugging Face)…";
+    chrome.runtime.sendMessage({ type: "warmupModels", which: which || "both" }, (resp) => {
       if (chrome.runtime.lastError) {
         status.textContent = chrome.runtime.lastError.message;
+        document.getElementById("model-status").dataset.state = "error";
         return;
       }
       document.getElementById("model-status").textContent = formatModelStatus(resp);
-      status.textContent =
-        resp && resp.ok === false
-          ? "Models unavailable — local heuristics only"
-          : "Model load finished (see status).";
+      const bad = !resp || resp.ok === false || resp.text?.status === "error" || resp.image?.status === "error";
+      document.getElementById("model-status").dataset.state = bad ? "error" : "ok";
+      status.textContent = bad
+        ? "Models unavailable — local heuristics only (retry anytime)."
+        : "Model load finished.";
     });
-  });
+  }
+
+  warmupBtn.addEventListener("click", () => runWarmup("both"));
+  if (retryBtn) retryBtn.addEventListener("click", () => runWarmup("both"));
 
   refreshAll();
-  status.textContent = "Ready — enable this site to show badges.";
+  status.textContent = "Ready — Enable badges on this site to inject.";
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
