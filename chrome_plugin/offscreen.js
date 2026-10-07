@@ -197,6 +197,7 @@ function hashStr(s) {
   return (h >>> 0).toString(16);
 }
 
+// FALLBACK ONLY: used when models fail to load or forceMock is set. Labeled as local heuristics in the UI.
 function mockTextScore(text) {
   const t = (text || "").trim();
   if (!t) return { score: 0.5, label: "local score", state: "signal", mode: "mock" };

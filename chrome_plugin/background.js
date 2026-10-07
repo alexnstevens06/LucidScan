@@ -323,7 +323,7 @@ async function scoreViaOffscreen(kind, payload) {
   });
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: "scan-text",
@@ -341,11 +341,12 @@ chrome.runtime.onInstalled.addListener(() => {
       contexts: ["video"],
     });
   });
-  chrome.storage.local.set({
-    inferenceMode: "transformers",
-    enabledOrigins: [],
-    pausedOrigins: [],
-  });
+  // Only reset site lists on a fresh install — keep user choices across updates/reloads.
+  if (details && details.reason === "install") {
+    chrome.storage.local
+      .set({ inferenceMode: "transformers", enabledOrigins: [], pausedOrigins: [] })
+      .catch(() => {});
+  }
   syncRegisteredContentScripts().catch((e) => console.warn("register scripts", e));
 });
 
@@ -531,15 +532,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.action === "getImages" && sender.tab?.id) {
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id },
-      files: ["rip_images.js"],
-    });
-  }
-  if (msg.imageUrls) {
-    chrome.storage.local.set({ imageUrls: msg.imageUrls });
-  }
 });
 
 chrome.contextMenus.onClicked.addListener(async (info) => {
@@ -594,13 +586,12 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
     display = { confidence: null, label: "offline", contentType: type };
   }
 
-  await chrome.storage.local.set({ lastScan: display });
-  chrome.windows.create({
-    url: "popup.html",
-    type: "popup",
-    width: 420,
-    height: 360,
-  });
+  try {
+    await chrome.storage.local.set({ lastScan: display });
+    await chrome.windows.create({ url: "popup.html", type: "popup", width: 420, height: 360 });
+  } catch (err) {
+    console.warn("[LucidScan] could not show scan result", String(err && err.message ? err.message : err));
+  }
 });
 
 
@@ -627,11 +618,15 @@ chrome.permissions.onAdded.addListener((perm) => {
 });
 chrome.permissions.onRemoved.addListener(async (perm) => {
   if (!perm || !perm.origins) return;
-  const origins = await getEnabledOrigins();
-  const next = origins.filter((o) => !perm.origins.includes(o));
-  if (next.length !== origins.length) {
-    await setEnabledOrigins(next);
-    await syncRegisteredContentScripts();
+  try {
+    const origins = await getEnabledOrigins();
+    const next = origins.filter((o) => !perm.origins.includes(o));
+    if (next.length !== origins.length) {
+      await setEnabledOrigins(next);
+      await syncRegisteredContentScripts();
+    }
+  } catch (err) {
+    console.warn("[LucidScan] permission cleanup failed", String(err && err.message ? err.message : err));
   }
 });
 
