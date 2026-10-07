@@ -23,7 +23,7 @@ Load unpacked from `chrome_plugin/`:
 | `local score N` | Local heuristic/model **signal** (0–100 display). Not authenticity. |
 | `offline` | Coordinator unavailable |
 
-Current milestone (**M1**): mock local scores in an **offscreen document** so Load unpacked works without model downloads. Architecture matches `docs/lucidscan-mv3-local.md`:
+Current milestone (**M2/M3**): Transformers.js pipelines in an **offscreen document** (mock fallback if models unavailable). Architecture matches `docs/lucidscan-mv3-local.md`:
 
 - Content script = thin bridge; **closed Shadow DOM** badges
 - `MutationObserver` + `IntersectionObserver` (visible images only)
@@ -31,11 +31,15 @@ Current milestone (**M1**): mock local scores in an **offscreen document** so Lo
 - Service worker coordinates; inference in offscreen
 - Context menu kept as fallback (“Scan … (local signal)”)
 
-### Planned local models (M2/M3 — not default Desklib)
+### Local models (default badge path — not Desklib)
 
-- **Text:** Transformers.js + `onnx-community/tmr-ai-text-detector-ONNX` (q8), WebGPU → WASM
-- **Images:** Transformers.js + CLIP ViT-B/32 (`Xenova/clip-vit-base-patch32`), visible-only + cache by `src` hash
-- **Not** the default badge path: Desklib (~1.75GB) / Flask CLIP-large — keep as optional power-user desktop stack
+- **Text (M2):** Transformers.js + `onnx-community/tmr-ai-text-detector-ONNX` (q8), WebGPU → WASM, in the offscreen document
+- **Images (M3):** Transformers.js + CLIP ViT-B/32 (`Xenova/clip-vit-base-patch32`), IntersectionObserver visible-only, cache by `src` hash; content script sends an ephemeral canvas data URL when possible
+- **Runtime:** ORT WASM vendored under `chrome_plugin/lib/`; model weights download from Hugging Face on first use (browser cache). Popup → **Load local models** to warm up.
+- **Fallback:** If a pipeline fails to load, badges fall back to mock local scores (`mode: mock`) so the UX stays up.
+- **Not** the default badge path: Desklib (~1.75GB) / Flask CLIP-large — optional power-user desktop stack only
+
+Set `chrome.storage.local.inferenceMode = "mock"` or `forceMock: true` to force heuristics without downloading models.
 
 ### Legal / model notes
 
@@ -76,3 +80,4 @@ python server.py
 2. Load unpacked `chrome_plugin/` — service worker should not crash
 3. Serve sample page; confirm image pills + selection chip
 4. Confirm UI copy has no authenticity claims
+5. Popup → **Load local models**; after download, selection chip / image pills show `local score N` with `mode: transformers`

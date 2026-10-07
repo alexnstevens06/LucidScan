@@ -2,6 +2,37 @@
   "use strict";
 
   const MIN_IMG = 48;
+
+  function hashStr(s) {
+    let h = 2166136261;
+    for (let i = 0; i < String(s).length; i++) {
+      h ^= String(s).charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(16);
+  }
+
+  /** Ephemeral in-tab bitmap → data URL for offscreen CLIP (no scrape/resell). */
+  function imageToDataUrl(img) {
+    try {
+      const w = Math.min(img.naturalWidth || img.width || 0, 512);
+      const h = Math.min(img.naturalHeight || img.height || 0, 512);
+      if (w < MIN_IMG || h < MIN_IMG) return null;
+      const canvas = document.createElement("canvas");
+      // keep aspect
+      const nw = img.naturalWidth || img.width;
+      const nh = img.naturalHeight || img.height;
+      const scale = Math.min(512 / nw, 512 / nh, 1);
+      canvas.width = Math.max(1, Math.round(nw * scale));
+      canvas.height = Math.max(1, Math.round(nh * scale));
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL("image/jpeg", 0.85);
+    } catch (_) {
+      // tainted canvas / CORS — fall back to src URL for extension-host fetch
+      return null;
+    }
+  }
   const BADGE_ATTR = "data-lucidscan-host";
   let badgeModeEnabled = true;
   let seq = 0;
@@ -129,12 +160,17 @@
     entry.pill.textContent = "pending";
 
     const src = img.currentSrc || img.src;
-    const result = await requestScore("scoreImage", { src });
+    const dataUrl = imageToDataUrl(img);
+    const cacheKey = hashStr(src || dataUrl || "");
+    const result = await requestScore("scoreImage", { src, dataUrl, cacheKey });
     if (!imgHosts.has(img)) return;
     entry.pill.dataset.state = result.state || "signal";
-    entry.pill.textContent = result.label || "local score";
-    if (typeof result.score === "number") {
+    if (result.label === "loading" || result.state === "pending") {
+      entry.pill.textContent = result.label || "pending";
+    } else if (typeof result.score === "number") {
       entry.pill.textContent = `local score ${Math.round(result.score * 100)}`;
+    } else {
+      entry.pill.textContent = result.label || "local score";
     }
   }
 

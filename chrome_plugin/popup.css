@@ -53,3 +53,6 @@ h2 { font-size: 0.85rem; margin: 0 0 8px; text-transform: uppercase; letter-spac
 }
 .about ul { margin: 0; padding-left: 1.1rem; color: var(--muted); }
 .about li { margin-bottom: 6px; }
+
+.btn.secondary { margin-top: 6px; background: #182233; }
+code { font-size: 11px; color: #b8d4ff; }

@@ -18,6 +18,7 @@
         <input type="checkbox" id="badge-toggle" checked />
       </label>
       <button type="button" id="enable-hosts" class="btn">Enable badges on sites</button>
+      <button type="button" id="warmup" class="btn secondary">Load local models</button>
       <p id="status" class="muted">Inference: …</p>
     </section>
 
@@ -31,8 +32,8 @@
     <section class="card about">
       <h2>About / licenses</h2>
       <ul>
-        <li>Default badge path (planned): Transformers.js + TMR text ONNX (MIT) and CLIP ViT-B/32 (MIT code; model-card deployed use out of scope).</li>
-        <li>Current build ships <strong>mock local scores</strong> so Load unpacked works offline.</li>
+        <li>Default badge path: Transformers.js (@huggingface/transformers) with <code>onnx-community/tmr-ai-text-detector-ONNX</code> (MIT) and CLIP ViT-B/32 <code>Xenova/clip-vit-base-patch32</code> (CLIP code MIT; model-card deployed use out of scope).</li>
+        <li>Models download from Hugging Face on first use into the browser cache (local/dev). WASM/ORT is vendored under <code>lib/</code>.</li>
         <li>Optional Flask + Desklib/CLIP-large remains a power-user desktop path — not the default badge stack.</li>
         <li>Images are scored in-tab ephemerally; do not scrape or resell site media.</li>
       </ul>

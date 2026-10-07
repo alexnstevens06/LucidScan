@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "LucidScan",
-  "version": "0.1.0",
-  "description": "Browse-time local signal badges for images and selected text. Local signal only \u2014 not an authenticity verdict.",
+  "version": "0.2.0",
+  "description": "Browse-time local signal badges for images and selected text using on-device models. Local signal only \u2014 not an authenticity verdict.",
   "permissions": [
     "storage",
     "contextMenus",
@@ -15,7 +15,14 @@
     "https://*/*"
   ],
   "host_permissions": [
-    "http://localhost:5000/*"
+    "http://localhost:5000/*",
+    "https://huggingface.co/*",
+    "https://*.huggingface.co/*",
+    "https://cdn-lfs.huggingface.co/*",
+    "https://cdn-lfs-us-east-1.huggingface.co/*",
+    "https://hf.co/*",
+    "https://*.hf.co/*",
+    "https://cdn-lfs-eu-1.huggingface.co/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -43,7 +50,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "lib/*"
+        "lib/*",
+        "lib/**"
       ],
       "matches": [
         "http://*/*",
