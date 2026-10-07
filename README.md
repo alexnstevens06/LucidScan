@@ -15,7 +15,8 @@ Badges are a **local signal only** — not an authenticity verdict. The UI never
 4. Click the LucidScan icon → Enable badges on this site → Allow
 5. Confirm image corner pills / selection chip show “local score …”
 6. Optional: Enabled sites list → Disable / Clear all
-7. Optional: Pause badges everywhere (global) to hide without revoking sites
+7. Optional: Pause badges on this site (keeps enable; hides badges) or Disable / Clear all
+8. Shortcut: Alt+Shift+L enables badges on the current http(s) site
 ```
 
 Badges never claim authenticity. First inference may download HF models into the browser cache.
@@ -30,6 +31,16 @@ Badges never claim authenticity. First inference may download HF models into the
 - **Anti-strip:** if a page removes badge host nodes, LucidScan re-attaches with exponential backoff a few times, then stops fighting (banking/anti-fraud pages).
 - **Model fail UX:** popup shows loading / unavailable / heuristics-only and offers **Retry model load**. Badges may show heuristics labels without authenticity claims.
 
+
+### Pass-3 behavior notes
+
+- **Zero WAR:** `web_accessible_resources` removed — WASM/Transformers stay extension-page-only; badges use closed Shadow DOM + inline CSS (no page-loaded assets).
+- **Cache:** image scores capped at ~200 with **24h TTL** eviction (memory LRU + IndexedDB).
+- **Pause:** per-site only (`pausedOrigins`) — does not revoke host permission or remove enable; **Disable** revokes.
+- **Restricted URLs:** Enable blocks `file://`, `chrome://`, `chrome-error://`, etc. Serve `test/sample.html` over http(s).
+- **Shortcut:** `Alt+Shift+L` → Enable badges on this site.
+- Still no `webNavigation`; no `addHostAccessRequest`.
+
 ## Chrome extension (primary)
 
 Load unpacked from `chrome_plugin/`:
@@ -41,7 +52,7 @@ Load unpacked from `chrome_plugin/`:
 5. Click the LucidScan action → **Enable badges on this site** (grants optional host permission for that origin and injects the content script)
 6. Visible images get a corner pill (`pending` → `local score N`); select text (≥12 chars) for a floating chip
 7. **Disable badges on this site** removes registration for that origin and tears down badges; **Pause badges (global)** hides badges on all enabled sites without revoking permissions
-8. Optional: **Load local models** (auto-warmup also runs when the offscreen document starts)
+9. Optional: **Load local models** (auto-warmup also runs when the offscreen document starts)
 
 ### What badges mean
 

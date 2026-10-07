@@ -20,17 +20,22 @@ const IMAGE_LABELS = [
 
 const imageCache = new Map(); // hash -> result (memory)
 const IMAGE_CACHE_MAX = 200;
+const IMAGE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const IDB_NAME = "lucidscan-cache";
 const IDB_STORE = "imageScores";
 let idbReady = null;
 
 function memoryCacheSet(key, result) {
   if (imageCache.has(key)) imageCache.delete(key);
-  imageCache.set(key, result);
+  imageCache.set(key, { result, ts: Date.now() });
   while (imageCache.size > IMAGE_CACHE_MAX) {
     const oldest = imageCache.keys().next().value;
     imageCache.delete(oldest);
   }
+}
+
+function isFresh(ts) {
+  return typeof ts === "number" && Date.now() - ts < IMAGE_CACHE_TTL_MS;
 }
 
 function openIdb() {
@@ -104,15 +109,29 @@ async function idbPut(key, result) {
 async function cacheGet(key) {
   if (imageCache.has(key)) {
     const hit = imageCache.get(key);
-    // refresh LRU order
+    if (hit && isFresh(hit.ts)) {
+      imageCache.delete(key);
+      imageCache.set(key, hit); // LRU refresh
+      return { ...hit.result, cached: true };
+    }
     imageCache.delete(key);
-    imageCache.set(key, hit);
-    return { ...hit, cached: true };
   }
   const row = await idbGet(key);
-  if (row && row.result) {
+  if (row && row.result && isFresh(row.ts)) {
     memoryCacheSet(key, row.result);
     return { ...row.result, cached: true };
+  }
+  if (row && row.key) {
+    // expired — best-effort delete
+    try {
+      const db = await openIdb();
+      await new Promise((resolve) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } catch (_) {}
   }
   return null;
 }
@@ -195,10 +214,13 @@ function mockTextScore(text) {
 }
 
 function mockImageScore(key) {
-  if (imageCache.has(key)) return { ...imageCache.get(key), cached: true };
+  if (imageCache.has(key)) {
+    const hit = imageCache.get(key);
+    if (hit && isFresh(hit.ts)) return { ...hit.result, cached: true };
+  }
   const n = parseInt(hashStr(key).slice(0, 6), 16) || 0;
   const score = 0.2 + (n % 600) / 1000;
-  const result = { score, label: "local score", state: "signal", mode: "mock" };
+  const result = { score, label: "local score", state: "signal", mode: "mock", heuristics: true };
   memoryCacheSet(key, result);
   return result;
 }
@@ -391,7 +413,7 @@ async function scoreText(text, overrides = null) {
   } catch (err) {
     console.warn("[LucidScan] text pipeline failed, mock fallback:", err);
     const fallback = mockTextScore(sample);
-    return { ...fallback, fallbackReason: String(err?.message || err) };
+    return { ...fallback, heuristics: true, fallbackReason: String(err?.message || err) };
   }
 }
 
@@ -428,7 +450,7 @@ async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
   } catch (err) {
     console.warn("[LucidScan] image pipeline failed, mock fallback:", err);
     const fallback = mockImageScore(key);
-    return { ...fallback, fallbackReason: String(err?.message || err) };
+    return { ...fallback, heuristics: true, fallbackReason: String(err?.message || err) };
   }
 }
 

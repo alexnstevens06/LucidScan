@@ -63,6 +63,12 @@ def main() -> int:
                     errors.append(f"permissions missing: {need}")
             if not m.get("optional_host_permissions"):
                 errors.append("optional_host_permissions missing for per-site enable")
+            war = m.get("web_accessible_resources")
+            if war:
+                # Allow empty list only; non-empty WAR should be intentional/minimal
+                if not isinstance(war, list) or any(True for _ in war):
+                    # soft warning as error for now — prefer zero WAR
+                    errors.append("web_accessible_resources should be absent (zero-WAR: models stay in extension pages)")
 
     # Scan UI sources for accuracy-claim strings (allow negation in comments/docs)
     for rel in ("popup.html", "popup.js", "background.js", "content.js", "offscreen.js"):

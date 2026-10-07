@@ -8,7 +8,7 @@ function paintLastScan(scan) {
     typeEl.textContent = "—";
     return;
   }
-  labelEl.textContent = scan.label || "local score";
+  labelEl.textContent = scan.heuristics ? "local heuristics" : scan.label || "local score";
   typeEl.textContent = scan.contentType || "—";
   if (scan.confidence == null || Number.isNaN(Number(scan.confidence))) {
     scoreEl.textContent = scan.label === "offline" ? "offline" : "—";
@@ -27,14 +27,13 @@ function formatModelStatus(resp) {
   const i = resp.image || "?";
   const td = resp.textDevice ? `/${resp.textDevice}` : "";
   const id = resp.imageDevice ? `/${resp.imageDevice}` : "";
-  let line = `Models: ${mode} — text ${t}${td}, image ${i}${id}`;
   if (t === "loading" || i === "loading") {
-    line = `Models: loading (first run may download from Hugging Face)…`;
-  } else if (t === "error" || i === "error" || mode === "mock") {
-    line = `Models unavailable — using local heuristics only (not authenticity).`;
-    if (resp.textError) line += ` Text: ${String(resp.textError).slice(0, 80)}`;
+    return "Models: loading (first run may download from Hugging Face)…";
   }
-  return line;
+  if (t === "error" || i === "error" || mode === "mock") {
+    return "Models unavailable — showing local heuristics only (not authenticity).";
+  }
+  return `Models: ${mode} — text ${t}${td}, image ${i}${id}`;
 }
 
 function originPatternFromUrl(urlString) {
@@ -47,20 +46,21 @@ function originPatternFromUrl(urlString) {
   }
 }
 
-function renderSiteList(origins) {
+function renderSiteList(origins, pausedOrigins) {
   const ul = document.getElementById("site-list");
   ul.innerHTML = "";
+  const paused = new Set(pausedOrigins || []);
   if (!origins || !origins.length) {
     const li = document.createElement("li");
     li.className = "empty";
-    li.textContent = "No sites enabled yet.";
+    li.textContent = "No sites enabled yet. Open a page and click Enable.";
     ul.appendChild(li);
     return;
   }
   for (const origin of origins) {
     const li = document.createElement("li");
     const span = document.createElement("span");
-    span.textContent = origin;
+    span.textContent = paused.has(origin) ? `${origin} (paused)` : origin;
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "btn tiny";
@@ -78,6 +78,9 @@ function refreshSiteStatus() {
   const stateEl = document.getElementById("site-state");
   const enableBtn = document.getElementById("enable-site");
   const disableBtn = document.getElementById("disable-site");
+  const pauseBtn = document.getElementById("pause-site");
+  const resumeBtn = document.getElementById("resume-site");
+
   chrome.runtime.sendMessage({ type: "getSiteBadgeStatus" }, (resp) => {
     if (chrome.runtime.lastError) {
       originEl.textContent = "(unavailable)";
@@ -85,32 +88,53 @@ function refreshSiteStatus() {
       stateEl.dataset.state = "unknown";
       return;
     }
-    renderSiteList(resp && resp.enabledOrigins);
-    if (!resp || !resp.origin) {
-      originEl.textContent = "Open an http(s) page, then enable here.";
-      originEl.title = "";
+    renderSiteList(resp && resp.enabledOrigins, resp && resp.pausedOrigins);
+
+    if (!resp || !resp.origin || resp.restricted) {
+      originEl.textContent = resp && resp.restricted
+        ? "Restricted URL — open http(s) (not file:// or chrome://)"
+        : "Open an http(s) page, then enable here.";
       stateEl.textContent = "No page";
       stateEl.dataset.state = "off";
       enableBtn.disabled = true;
       disableBtn.disabled = true;
+      pauseBtn.disabled = true;
+      resumeBtn.disabled = true;
       enableBtn.hidden = false;
       disableBtn.hidden = true;
+      pauseBtn.hidden = true;
+      resumeBtn.hidden = true;
       return;
     }
+
     originEl.textContent = resp.origin;
     originEl.title = resp.tabUrl || resp.origin;
     enableBtn.disabled = false;
     disableBtn.disabled = false;
-    if (resp.enabled) {
-      stateEl.textContent = "Badges ON for this site";
-      stateEl.dataset.state = "on";
-      enableBtn.hidden = true;
-      disableBtn.hidden = false;
-    } else {
-      stateEl.textContent = "Badges OFF — click Enable";
+    pauseBtn.disabled = false;
+    resumeBtn.disabled = false;
+
+    if (!resp.enabled) {
+      stateEl.textContent = "OFF — not enabled";
       stateEl.dataset.state = "off";
       enableBtn.hidden = false;
       disableBtn.hidden = true;
+      pauseBtn.hidden = true;
+      resumeBtn.hidden = true;
+    } else if (resp.sitePaused) {
+      stateEl.textContent = "PAUSED on this site";
+      stateEl.dataset.state = "off";
+      enableBtn.hidden = true;
+      disableBtn.hidden = false;
+      pauseBtn.hidden = true;
+      resumeBtn.hidden = false;
+    } else {
+      stateEl.textContent = "ON for this site";
+      stateEl.dataset.state = "on";
+      enableBtn.hidden = true;
+      disableBtn.hidden = false;
+      pauseBtn.hidden = false;
+      resumeBtn.hidden = true;
     }
   });
 }
@@ -124,11 +148,7 @@ function refreshModels() {
       return;
     }
     modelStatus.textContent = formatModelStatus(resp);
-    const bad =
-      !resp ||
-      resp.mode === "mock" ||
-      resp.text === "error" ||
-      resp.image === "error";
+    const bad = !resp || resp.mode === "mock" || resp.text === "error" || resp.image === "error";
     const loading = resp && (resp.text === "loading" || resp.image === "loading");
     modelStatus.dataset.state = loading ? "loading" : bad ? "error" : "ok";
   });
@@ -140,31 +160,19 @@ function refreshAll() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  const toggle = document.getElementById("badge-toggle");
   const status = document.getElementById("status");
   const enableBtn = document.getElementById("enable-site");
   const disableBtn = document.getElementById("disable-site");
+  const pauseBtn = document.getElementById("pause-site");
+  const resumeBtn = document.getElementById("resume-site");
   const clearAll = document.getElementById("clear-all");
   const warmupBtn = document.getElementById("warmup");
   const retryBtn = document.getElementById("retry-models");
 
-  chrome.storage.local.get({ badgeModeEnabled: true, lastScan: null }, (r) => {
-    toggle.checked = r.badgeModeEnabled !== false;
-    paintLastScan(r.lastScan);
-  });
-
-  toggle.addEventListener("change", () => {
-    chrome.storage.local.set({ badgeModeEnabled: toggle.checked });
-    status.textContent = toggle.checked
-      ? "Global pause off — badges can show on enabled sites."
-      : "Paused everywhere — site enables kept; badges hidden.";
-  });
+  chrome.storage.local.get({ lastScan: null }, (r) => paintLastScan(r.lastScan));
 
   enableBtn.addEventListener("click", () => {
     status.textContent = "Requesting site permission…";
-    // Gesture-safe ladder (Diligence pack):
-    // 1) tabs.query callback is still in the user-gesture chain
-    // 2) permissions.request MUST be the first async permissions call (no await before it)
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tab = tabs && tabs[0];
       if (!tab || !tab.url) {
@@ -173,10 +181,9 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       const origin = originPatternFromUrl(tab.url);
       if (!origin) {
-        status.textContent = "Badges only work on http(s) pages.";
+        status.textContent = "Restricted or non-http(s) URL. Serve sample over http.";
         return;
       }
-      // First chrome.permissions.* call in this turn = request (not contains).
       chrome.permissions.request({ origins: [origin] }, (granted) => {
         if (chrome.runtime.lastError) {
           status.textContent = chrome.runtime.lastError.message;
@@ -186,26 +193,19 @@ document.addEventListener("DOMContentLoaded", () => {
           status.textContent = "Permission denied for this site.";
           return;
         }
-        status.textContent = "Permission OK — injecting…";
         chrome.runtime.sendMessage(
-          {
-            type: "enableBadgesForSite",
-            origin,
-            tabId: tab.id,
-            permissionGranted: true,
-          },
+          { type: "enableBadgesForSite", origin, tabId: tab.id, permissionGranted: true },
           (resp) => {
             if (chrome.runtime.lastError) {
               status.textContent = chrome.runtime.lastError.message;
               return;
             }
-            if (resp && resp.ok) {
-              status.textContent = resp.injected
-                ? `Enabled on ${resp.origin}`
-                : `Enabled on ${resp.origin} — reload if badges missing`;
-            } else {
-              status.textContent = (resp && resp.error) || "Enable failed.";
-            }
+            status.textContent =
+              resp && resp.ok
+                ? resp.injected
+                  ? `Enabled on ${resp.origin}`
+                  : `Enabled on ${resp.origin} — reload if badges missing`
+                : (resp && resp.error) || "Enable failed.";
             refreshAll();
           }
         );
@@ -213,8 +213,23 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
+  pauseBtn.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "pauseBadgesForSite" }, (resp) => {
+      status.textContent =
+        resp && resp.ok ? `Paused on ${resp.origin}` : (resp && resp.error) || "Pause failed.";
+      refreshAll();
+    });
+  });
+
+  resumeBtn.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "resumeBadgesForSite" }, (resp) => {
+      status.textContent =
+        resp && resp.ok ? `Resumed on ${resp.origin}` : (resp && resp.error) || "Resume failed.";
+      refreshAll();
+    });
+  });
+
   disableBtn.addEventListener("click", () => {
-    status.textContent = "Disabling this site…";
     chrome.runtime.sendMessage({ type: "disableBadgesForSite" }, (resp) => {
       status.textContent =
         resp && resp.ok ? `Disabled ${resp.origin}` : (resp && resp.error) || "Disable failed.";
@@ -223,7 +238,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   clearAll.addEventListener("click", () => {
-    status.textContent = "Clearing all enabled sites…";
     chrome.runtime.sendMessage({ type: "clearAllBadgeOrigins" }, (resp) => {
       status.textContent =
         resp && resp.ok
@@ -233,19 +247,23 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  function runWarmup(which) {
+  function runWarmup() {
     status.textContent = "Loading models (HF download on first run)…";
     document.getElementById("model-status").dataset.state = "loading";
     document.getElementById("model-status").textContent =
       "Models: loading (first run may download from Hugging Face)…";
-    chrome.runtime.sendMessage({ type: "warmupModels", which: which || "both" }, (resp) => {
+    chrome.runtime.sendMessage({ type: "warmupModels", which: "both" }, (resp) => {
       if (chrome.runtime.lastError) {
         status.textContent = chrome.runtime.lastError.message;
         document.getElementById("model-status").dataset.state = "error";
         return;
       }
       document.getElementById("model-status").textContent = formatModelStatus(resp);
-      const bad = !resp || resp.ok === false || resp.text?.status === "error" || resp.image?.status === "error";
+      const bad =
+        !resp ||
+        resp.ok === false ||
+        (resp.text && resp.text.status === "error") ||
+        (resp.image && resp.image.status === "error");
       document.getElementById("model-status").dataset.state = bad ? "error" : "ok";
       status.textContent = bad
         ? "Models unavailable — local heuristics only (retry anytime)."
@@ -253,15 +271,15 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  warmupBtn.addEventListener("click", () => runWarmup("both"));
-  if (retryBtn) retryBtn.addEventListener("click", () => runWarmup("both"));
+  warmupBtn.addEventListener("click", runWarmup);
+  retryBtn.addEventListener("click", runWarmup);
 
   refreshAll();
-  status.textContent = "Ready — Enable badges on this site to inject.";
+  status.textContent = "Ready — Enable badges on this site (or Alt+Shift+L).";
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     if (changes.lastScan) paintLastScan(changes.lastScan.newValue);
-    if (changes.enabledOrigins) refreshSiteStatus();
+    if (changes.enabledOrigins || changes.pausedOrigins) refreshSiteStatus();
   });
 });

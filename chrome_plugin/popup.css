@@ -134,3 +134,17 @@ code { font-size: 11px; color: #b8d4ff; }
 #model-status[data-state="loading"] { color: #c9d7ff; }
 #model-status[data-state="error"] { color: #ffc9a0; }
 #model-status[data-state="ok"] { color: #b8f0d4; }
+
+.btn:focus-visible, input:focus-visible {
+  outline: 2px solid #7eb6ff;
+  outline-offset: 2px;
+}
+kbd {
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: #101826;
+}
+.state-pill[data-state="unknown"] { opacity: 0.8; }

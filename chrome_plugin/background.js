@@ -18,6 +18,45 @@ function originPatternFromUrl(urlString) {
   }
 }
 
+function isRestrictedUrl(urlString) {
+  if (!urlString || typeof urlString !== "string") return true;
+  const lower = urlString.toLowerCase();
+  if (
+    lower.startsWith("chrome://") ||
+    lower.startsWith("chrome-extension://") ||
+    lower.startsWith("chrome-error://") ||
+    lower.startsWith("devtools://") ||
+    lower.startsWith("edge://") ||
+    lower.startsWith("about:") ||
+    lower.startsWith("view-source:") ||
+    lower.startsWith("file://")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function logInfo(msg, extra) {
+  // No URLs/PII in logs — origin host only when provided
+  if (extra && extra.host) console.info("[LucidScan]", msg, { host: extra.host });
+  else console.info("[LucidScan]", msg);
+}
+
+async function getPausedOrigins() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({ pausedOrigins: [] }, (r) => {
+      const list = Array.isArray(r.pausedOrigins) ? r.pausedOrigins : [];
+      resolve([...new Set(list)].filter(Boolean));
+    });
+  });
+}
+
+async function setPausedOrigins(origins) {
+  const cleaned = [...new Set(origins)].filter(Boolean).sort();
+  await chrome.storage.local.set({ pausedOrigins: cleaned });
+  return cleaned;
+}
+
 function getEnabledOrigins() {
   return new Promise((resolve) => {
     chrome.storage.local.get({ enabledOrigins: [] }, (r) => {
@@ -71,6 +110,9 @@ async function teardownInTab(tabId) {
 
 async function activateBadgesForOrigin(pattern, tabId) {
   if (!pattern) return { ok: false, error: "Missing origin pattern." };
+  if (pattern.startsWith("file:") || pattern.startsWith("chrome:") || pattern.startsWith("chrome-error:")) {
+    return { ok: false, error: "Restricted URL — use http(s). Serve sample via python3 -m http.server." };
+  }
   // Permission must already be granted (popup called permissions.request in the gesture).
   let permitted = false;
   try {
@@ -84,6 +126,9 @@ async function activateBadgesForOrigin(pattern, tabId) {
       error: "Host permission missing — click Enable again (gesture required).",
     };
   }
+  // Enabling implies resume (pause is per-site hide, not revoke)
+  const paused = (await getPausedOrigins()).filter((o) => o !== pattern);
+  await setPausedOrigins(paused);
   const origins = await getEnabledOrigins();
   if (!origins.includes(pattern)) origins.push(pattern);
   await setEnabledOrigins(origins);
@@ -112,6 +157,9 @@ async function activateBadgesForOrigin(pattern, tabId) {
 async function enableBadgesForTab(tab) {
   if (!tab || !tab.id || !tab.url) {
     return { ok: false, error: "No active http(s) tab." };
+  }
+  if (isRestrictedUrl(tab.url)) {
+    return { ok: false, error: "Restricted URL (chrome://, file://, etc.). Use http(s) — e.g. python3 -m http.server for sample.html." };
   }
   const pattern = originPatternFromUrl(tab.url);
   if (!pattern) {
@@ -182,8 +230,10 @@ async function clearAllEnabledOrigins() {
 
 async function getSiteBadgeStatus(tab) {
   const origins = await getEnabledOrigins();
+  const paused = await getPausedOrigins();
   const pattern = tab && tab.url ? originPatternFromUrl(tab.url) : null;
   const enabled = !!(pattern && origins.includes(pattern));
+  const sitePaused = !!(pattern && paused.includes(pattern));
   let permission = false;
   if (pattern) {
     try {
@@ -193,8 +243,11 @@ async function getSiteBadgeStatus(tab) {
   return {
     origin: pattern,
     enabled,
+    sitePaused,
     permission,
     enabledOrigins: origins,
+    pausedOrigins: paused,
+    restricted: !!(tab && tab.url && isRestrictedUrl(tab.url)),
     tabUrl: tab && tab.url ? tab.url : null,
   };
 }
@@ -289,9 +342,9 @@ chrome.runtime.onInstalled.addListener(() => {
     });
   });
   chrome.storage.local.set({
-    badgeModeEnabled: true,
     inferenceMode: "transformers",
     enabledOrigins: [],
+    pausedOrigins: [],
   });
   syncRegisteredContentScripts().catch((e) => console.warn("register scripts", e));
 });
@@ -346,6 +399,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ...flags,
         });
         sendResponse(result || { ok: false });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "pauseBadgesForSite") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const pattern = msg.origin || (tab && tab.url ? originPatternFromUrl(tab.url) : null);
+        if (!pattern) {
+          sendResponse({ ok: false, error: "No site origin." });
+          return;
+        }
+        const paused = await getPausedOrigins();
+        if (!paused.includes(pattern)) paused.push(pattern);
+        await setPausedOrigins(paused);
+        if (tab && tab.id) await teardownInTab(tab.id);
+        logInfo("paused site", { host: pattern });
+        sendResponse({ ok: true, origin: pattern, pausedOrigins: paused });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "resumeBadgesForSite") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const pattern = msg.origin || (tab && tab.url ? originPatternFromUrl(tab.url) : null);
+        if (!pattern) {
+          sendResponse({ ok: false, error: "No site origin." });
+          return;
+        }
+        const paused = (await getPausedOrigins()).filter((o) => o !== pattern);
+        await setPausedOrigins(paused);
+        // Re-inject if still enabled
+        const enabled = await getEnabledOrigins();
+        if (enabled.includes(pattern) && tab && tab.id) {
+          try { await injectIntoTab(tab.id); } catch (_) {}
+        }
+        logInfo("resumed site", { host: pattern });
+        sendResponse({ ok: true, origin: pattern, pausedOrigins: paused });
       } catch (err) {
         sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
       }
@@ -519,5 +619,32 @@ chrome.permissions.onRemoved.addListener(async (perm) => {
   if (next.length !== origins.length) {
     await setEnabledOrigins(next);
     await syncRegisteredContentScripts();
+  }
+});
+
+
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== "enable-badges-this-site") return;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url || isRestrictedUrl(tab.url)) {
+      logInfo("command enable skipped: restricted or missing tab");
+      return;
+    }
+    const pattern = originPatternFromUrl(tab.url);
+    if (!pattern) return;
+    // Commands are a user gesture — request may work here.
+    const granted = await chrome.permissions.request({ origins: [pattern] });
+    if (!granted) {
+      logInfo("command enable: permission denied");
+      return;
+    }
+    // Unpause if paused
+    const paused = (await getPausedOrigins()).filter((o) => o !== pattern);
+    await setPausedOrigins(paused);
+    await activateBadgesForOrigin(pattern, tab.id);
+    logInfo("command enable ok", { host: pattern });
+  } catch (err) {
+    console.warn("[LucidScan] command enable failed", String(err && err.message ? err.message : err));
   }
 });

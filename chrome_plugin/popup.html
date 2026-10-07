@@ -17,7 +17,10 @@
       <p id="site-origin" class="origin" title="">Open an http(s) tab</p>
       <p id="site-state" class="state-pill" data-state="unknown">…</p>
       <button type="button" id="enable-site" class="btn primary">Enable badges on this site</button>
+      <button type="button" id="pause-site" class="btn secondary">Pause badges on this site</button>
+      <button type="button" id="resume-site" class="btn secondary">Resume badges on this site</button>
       <button type="button" id="disable-site" class="btn danger">Disable badges on this site</button>
+      <p class="hint-block">Shortcut: <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> enables this site. Pause hides badges without revoking permission; Disable removes the site enable.</p>
       <p id="status" class="muted" role="status">…</p>
     </section>
 
@@ -28,12 +31,7 @@
     </section>
 
     <section class="card">
-      <h2>Controls</h2>
-      <label class="row" title="Hides badges on every enabled site without revoking site access">
-        <span>Pause badges everywhere <span class="hint">(global)</span></span>
-        <input type="checkbox" id="badge-toggle" checked />
-      </label>
-      <p class="hint-block">Pause does <strong>not</strong> disable a site. Use Disable / Clear all to stop injection.</p>
+      <h2>Models</h2>
       <button type="button" id="warmup" class="btn secondary">Load local models</button>
       <button type="button" id="retry-models" class="btn secondary">Retry model load</button>
       <p id="model-status" class="muted" data-state="unknown">Models: …</p>
@@ -49,13 +47,13 @@
     <section class="card about" id="licenses">
       <h2>About / licenses (local-dev)</h2>
       <ul>
-        <li>Badges inject <strong>only after</strong> <em>Enable badges on this site</em> (optional host permission).</li>
-        <li><strong>Transformers.js</strong> — Apache-2.0; ORT WASM vendored under <code>lib/</code>.</li>
-        <li><strong>TMR text ONNX</strong> (<code>onnx-community/tmr-ai-text-detector-ONNX</code>) — MIT.</li>
-        <li><strong>CLIP ViT-B/32</strong> (<code>Xenova/clip-vit-base-patch32</code>) — CLIP <em>code</em> MIT; OpenAI CLIP <strong>model card</strong> treats deployed use as out of scope. LucidScan is local/dev signal tooling only.</li>
-        <li>First run downloads weights from Hugging Face into the browser cache — not vendored in git.</li>
-        <li>Cross-origin iframes are not scanned unless that frame’s origin is separately enabled; same-origin frames may be scanned.</li>
-        <li>Do not scrape or resell site media — scoring is in-tab and ephemeral.</li>
+        <li>Badges inject <strong>only after</strong> Enable on this site (optional host permission).</li>
+        <li><strong>Transformers.js</strong> — Apache-2.0; ORT WASM under <code>lib/</code> (extension-page only; not web-accessible).</li>
+        <li><strong>TMR text ONNX</strong> — MIT.</li>
+        <li><strong>CLIP ViT-B/32</strong> — CLIP code MIT; model-card deployed use out of scope. Local/dev signal tooling only.</li>
+        <li>First run downloads HF weights into browser cache — not vendored in git.</li>
+        <li>Same-origin iframes may be scanned; cross-origin frames need their own enable.</li>
+        <li><code>file://</code> is not supported — serve <code>test/sample.html</code> over http(s).</li>
       </ul>
     </section>
   </main>

@@ -9,7 +9,34 @@
   const BADGE_ATTR = "data-lucidscan-host";
   const TITLE_SIGNAL = "LucidScan local signal — not an authenticity verdict";
 
-  let badgeModeEnabled = true;
+  let sitePaused = false;
+  let badgesActive = true; // !sitePaused
+
+  function currentOriginPattern() {
+    try {
+      const u = location;
+      if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+      return `${u.protocol}//${u.host}/*`;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function refreshPauseState(cb) {
+    const pattern = currentOriginPattern();
+    try {
+      chrome.storage.local.get({ pausedOrigins: [] }, (r) => {
+        const paused = Array.isArray(r.pausedOrigins) ? r.pausedOrigins : [];
+        sitePaused = !!(pattern && paused.includes(pattern));
+        badgesActive = !sitePaused;
+        if (typeof cb === "function") cb();
+      });
+    } catch (_) {
+      sitePaused = false;
+      badgesActive = true;
+      if (typeof cb === "function") cb();
+    }
+  }
   let seq = 0;
   let inFlight = 0;
   let jobGeneration = 0;
@@ -65,22 +92,24 @@
   }
 
   function loadSettings() {
-    try {
-      chrome.storage.local.get({ badgeModeEnabled: true }, (r) => {
-        badgeModeEnabled = r.badgeModeEnabled !== false;
-        if (!badgeModeEnabled) teardownAll();
-        else scanImages();
-      });
-    } catch (_) {
-      badgeModeEnabled = true;
-    }
+    refreshPauseState(() => {
+      if (!badgesActive) teardownAll(false);
+      else {
+        ensureObservers();
+        scanImages();
+      }
+    });
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes.badgeModeEnabled) return;
-    badgeModeEnabled = changes.badgeModeEnabled.newValue !== false;
-    if (!badgeModeEnabled) teardownAll(false);
-    else { ensureObservers(); scanImages(); }
+    if (area !== "local" || !changes.pausedOrigins) return;
+    refreshPauseState(() => {
+      if (!badgesActive) teardownAll(false);
+      else {
+        ensureObservers();
+        scanImages();
+      }
+    });
   });
 
   function mountShadowHost(position) {
@@ -145,12 +174,12 @@
     if (result.label === "loading" || state === "pending") {
       state = result.label === "loading" ? "loading" : "pending";
       text = result.label || "pending";
-    } else if (fallback && mode === "mock") {
+    } else if (fallback || result.heuristics || mode === "mock") {
       state = "offline";
       text =
         typeof result.score === "number"
-          ? `local score ${Math.round(result.score * 100)} · heuristics`
-          : "models unavailable · heuristics";
+          ? `local heuristics ${Math.round(result.score * 100)}`
+          : "local heuristics (models unavailable)";
     } else if (typeof result.score === "number") {
       text = `local score ${Math.round(result.score * 100)}`;
       state = "signal";
@@ -221,12 +250,12 @@
   }
 
   function enqueueImage(img) {
-    if (!badgeModeEnabled || !img || scoredImgs.has(img) || isSkippableImg(img)) return;
+    if (!badgesActive || !img || scoredImgs.has(img) || isSkippableImg(img)) return;
     scoredImgs.set(img, true);
     const gen = jobGeneration;
     lowQueue.push(async () => {
-      if (gen !== jobGeneration || !badgeModeEnabled) return;
-      if (!badgeModeEnabled || !img.isConnected) return;
+      if (gen !== jobGeneration || !badgesActive) return;
+      if (!badgesActive || !img.isConnected) return;
       let entry = imgHosts.get(img);
       if (!entry) {
         entry = mountShadowHost("absolute");
@@ -268,13 +297,13 @@
   }
 
   function scanImages() {
-    if (!badgeModeEnabled) return;
+    if (!badgesActive) return;
     document.querySelectorAll("img").forEach(observeImg);
     scanSameOriginIframes();
   }
 
   function scanSameOriginIframes() {
-    if (!badgeModeEnabled) return;
+    if (!badgesActive) return;
     let frames;
     try {
       frames = document.querySelectorAll("iframe");
@@ -298,7 +327,7 @@
 
   function flushMutations() {
     moQueued = false;
-    if (!badgeModeEnabled) {
+    if (!badgesActive) {
       pendingNodes = [];
       return;
     }
@@ -323,7 +352,7 @@
   }
 
   const mo = new MutationObserver((mutations) => {
-    if (!badgeModeEnabled) return;
+    if (!badgesActive) return;
     for (const m of mutations) {
       for (const n of m.addedNodes) pendingNodes.push(n);
     }
@@ -345,7 +374,7 @@
   }
 
   async function onSelectionChange() {
-    if (!badgeModeEnabled) return hideTextChip();
+    if (!badgesActive) return hideTextChip();
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return hideTextChip();
     const text = String(sel).trim();
@@ -365,7 +394,7 @@
     const gen = jobGeneration;
     const result = await new Promise((resolve) => {
       highQueue.unshift(async () => {
-        if (gen !== jobGeneration || !badgeModeEnabled) {
+        if (gen !== jobGeneration || !badgesActive) {
           resolve({ label: "pending", state: "pending" });
           return;
         }
@@ -415,7 +444,7 @@
   let stripStrikes = 0;
   const stripSeen = new WeakSet();
   const stripObserver = new MutationObserver((mutations) => {
-    if (!badgeModeEnabled || stripStrikes > 8) return;
+    if (!badgesActive || stripStrikes > 6) return;
     let stripped = false;
     for (const m of mutations) {
       for (const n of m.removedNodes) {
@@ -426,9 +455,9 @@
     }
     if (!stripped) return;
     stripStrikes++;
-    const delay = Math.min(4000, 250 * 2 ** Math.min(stripStrikes, 5));
+    const delay = Math.min(6000, 300 * 2 ** Math.min(stripStrikes, 5));
     setTimeout(() => {
-      if (!badgeModeEnabled) return;
+      if (!badgesActive) return;
       // Clear weak scored markers for visible imgs missing hosts, then rescan
       for (const img of document.querySelectorAll("img")) {
         if (!imgHosts.has(img) && !isSkippableImg(img)) {
@@ -450,7 +479,7 @@
 
 
   function rebindAfterSoftNav() {
-    if (!badgeModeEnabled) return;
+    if (!badgesActive) return;
     ensureObservers();
     scanImages();
   }
