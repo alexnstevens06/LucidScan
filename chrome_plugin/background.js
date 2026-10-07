@@ -315,11 +315,13 @@ async function scoreViaOffscreen(kind, payload) {
   await ensureOffscreen();
   const id = payload.id || `sw-${Date.now()}`;
   const flags = await getInferenceFlags();
+  // payload is the content-script message (type: "scoreImage"/"scoreText"); spread it first so it
+  // cannot override the offscreen.* routing type (otherwise offscreen ignores it -> badges stay "pending").
   return chrome.runtime.sendMessage({
-    type: kind === "text" ? "offscreen.scoreText" : "offscreen.scoreImage",
-    id,
     ...payload,
     ...flags,
+    type: kind === "text" ? "offscreen.scoreText" : "offscreen.scoreImage",
+    id,
   });
 }
 
