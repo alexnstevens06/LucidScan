@@ -21,7 +21,11 @@ REQUIRED = [
     "lib/ort-wasm-simd-threaded.jsep.mjs",
     "test/sample.html",
 ]
-CLAIM_PATTERNS = ("Detect AI", "AI-detected", "100% human", "AI verified")
+CLAIM_PATTERNS = (
+    "Detect AI", "AI-detected", "100% human", "AI verified", "accurate", "accuracy",
+    "authentic image", "verified human", "guarantee", "proves", "definitely AI",
+)
+NEGATIONS = ("never", "not an", "no authenticity", "don't", "do not", "— never", "no accuracy", "not a ", "without")
 
 
 def main() -> int:
@@ -70,8 +74,23 @@ def main() -> int:
                     # soft warning as error for now — prefer zero WAR
                     errors.append("web_accessible_resources should be absent (zero-WAR: models stay in extension pages)")
 
+    if m is not None:
+        if "webNavigation" in (m.get("permissions") or []):
+            errors.append("permission not allowed by design: webNavigation")
+        for rel in ("rip_images.js", "bug.html"):
+            if (ROOT / rel).exists():
+                errors.append(f"legacy file should be removed: {rel}")
+    for rel in ("background.js", "popup.js", "content.js"):
+        p = ROOT / rel
+        if p.is_file() and "addHostAccessRequest" in p.read_text(encoding="utf-8", errors="replace"):
+            errors.append(f"addHostAccessRequest used in {rel} (not allowed by design)")
+    if (ROOT / "lib").is_dir():
+        for w in (ROOT / "lib").rglob("*"):
+            if w.suffix in (".onnx", ".safetensors", ".bin"):
+                errors.append(f"model weights vendored (should download on first run): {w.name}")
+
     # Scan UI sources for accuracy-claim strings (allow negation in comments/docs)
-    for rel in ("popup.html", "popup.js", "background.js", "content.js", "offscreen.js"):
+    for rel in ("popup.html", "popup.js", "background.js", "content.js", "offscreen.js", "manifest.json", "../README.md"):
         p = ROOT / rel
         if not p.is_file():
             continue
@@ -79,12 +98,9 @@ def main() -> int:
         for pat in CLAIM_PATTERNS:
             # Allow mentions that explicitly say never/not to claim
             for i, line in enumerate(text.splitlines(), 1):
-                if pat in line and not any(
-                    n in line.lower()
-                    for n in ("never", "not an", "no authenticity", "don't", "do not", "— never")
-                ):
+                if pat.lower() in line.lower() and not any(n in line.lower() for n in NEGATIONS):
                     # background context menu titles must not say Detect AI
-                    if pat in line:
+                    if True:
                         errors.append(f"possible accuracy-claim in {rel}:{i}: {line.strip()[:100]}")
 
     if errors:
