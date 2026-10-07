@@ -4,6 +4,23 @@
   globalThis.__lucidScanContentLoaded = true;
 
   const MIN_IMG = 48;
+  const MAX_CONCURRENT = 2;
+  const SELECTION_DEBOUNCE_MS = 280;
+  const BADGE_ATTR = "data-lucidscan-host";
+  const TITLE_SIGNAL = "LucidScan local signal — not an authenticity verdict";
+
+  let badgeModeEnabled = true;
+  let seq = 0;
+  let inFlight = 0;
+  const pending = new Map();
+  const scoreQueue = [];
+  const scoredImgs = new WeakMap();
+  const imgHosts = new Map();
+  let textChip = null;
+  let textChipLabel = null;
+  let selectionTimer = null;
+  let moQueued = false;
+  let pendingNodes = [];
 
   function hashStr(s) {
     let h = 2166136261;
@@ -14,38 +31,36 @@
     return (h >>> 0).toString(16);
   }
 
-  /** Ephemeral in-tab bitmap → data URL for offscreen CLIP (no scrape/resell). */
   function imageToDataUrl(img) {
     try {
-      const w = Math.min(img.naturalWidth || img.width || 0, 512);
-      const h = Math.min(img.naturalHeight || img.height || 0, 512);
-      if (w < MIN_IMG || h < MIN_IMG) return null;
-      const canvas = document.createElement("canvas");
-      // keep aspect
-      const nw = img.naturalWidth || img.width;
-      const nh = img.naturalHeight || img.height;
+      const nw = img.naturalWidth || img.width || 0;
+      const nh = img.naturalHeight || img.height || 0;
+      if (nw < MIN_IMG || nh < MIN_IMG) return null;
       const scale = Math.min(512 / nw, 512 / nh, 1);
+      const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.round(nw * scale));
       canvas.height = Math.max(1, Math.round(nh * scale));
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
       return canvas.toDataURL("image/jpeg", 0.85);
     } catch (_) {
-      // tainted canvas / CORS — fall back to src URL for extension-host fetch
       return null;
     }
   }
-  const BADGE_ATTR = "data-lucidscan-host";
-  let badgeModeEnabled = true;
-  let seq = 0;
-  const pending = new Map();
-  const scoredImgs = new WeakMap();
 
-  const imgHosts = new Map(); // img -> {host, root, labelEl}
-  let textChip = null;
-  let textChipRoot = null;
-  let textChipLabel = null;
-  let selectionTimer = null;
+  function isSkippableImg(img) {
+    if (!img || img.nodeType !== 1) return true;
+    if (img.closest("[data-lucidscan-host]")) return true;
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    if (w > 0 && h > 0 && (w < MIN_IMG || h < MIN_IMG)) return true;
+    try {
+      const st = getComputedStyle(img);
+      if (st.display === "none" || st.visibility === "hidden" || st.opacity === "0") return true;
+      if (img.getClientRects().length === 0) return true;
+    } catch (_) {}
+    if (!img.src && !img.currentSrc) return true;
+    return false;
+  }
 
   function loadSettings() {
     try {
@@ -62,13 +77,17 @@
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.badgeModeEnabled) return;
     badgeModeEnabled = changes.badgeModeEnabled.newValue !== false;
-    if (!badgeModeEnabled) teardownAll();
-    else scanImages();
+    if (!badgeModeEnabled) teardownAll(false);
+    else { ensureObservers(); scanImages(); }
   });
 
-  function mountShadowHost(anchor, position) {
+  function mountShadowHost(position) {
     const host = document.createElement("div");
     host.setAttribute(BADGE_ATTR, "1");
+    host.setAttribute("role", "status");
+    host.setAttribute("aria-live", "polite");
+    host.setAttribute("aria-label", "LucidScan local signal");
+    host.title = TITLE_SIGNAL;
     host.style.cssText =
       position === "fixed"
         ? "all:initial;position:fixed;z-index:2147483646;pointer-events:none;"
@@ -77,23 +96,30 @@
     const style = document.createElement("style");
     style.textContent = `
       .pill {
-        font: 11px/1.2 system-ui, -apple-system, Segoe UI, sans-serif;
-        color: #e8eef7;
-        background: rgba(18, 28, 45, 0.88);
-        border: 1px solid rgba(120, 160, 220, 0.45);
+        font: 600 11px/1.25 system-ui, -apple-system, Segoe UI, sans-serif;
+        color: #f4f8ff;
+        background: linear-gradient(180deg, rgba(22,34,54,0.96), rgba(12,18,30,0.96));
+        border: 1px solid rgba(180, 210, 255, 0.55);
         border-radius: 999px;
-        padding: 3px 8px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+        padding: 3px 9px;
+        box-shadow: 0 1px 0 rgba(255,255,255,0.12) inset, 0 2px 10px rgba(0,0,0,0.45);
         white-space: nowrap;
         letter-spacing: 0.02em;
+        text-shadow: 0 1px 1px rgba(0,0,0,0.55);
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
-      .pill[data-state="pending"] { opacity: 0.75; }
-      .pill[data-state="signal"] { border-color: rgba(100, 200, 160, 0.55); }
+      .pill[data-state="pending"],
+      .pill[data-state="loading"] { opacity: 0.85; border-color: rgba(160,180,210,0.4); }
+      .pill[data-state="signal"] { border-color: rgba(120, 220, 180, 0.7); }
+      .pill[data-state="offline"] { border-color: rgba(230, 170, 100, 0.75); color: #ffe8cc; }
     `;
     const pill = document.createElement("div");
     pill.className = "pill";
     pill.dataset.state = "pending";
     pill.textContent = "pending";
+    pill.title = TITLE_SIGNAL;
     root.append(style, pill);
     return { host, root, pill };
   }
@@ -108,6 +134,33 @@
     if (!host.isConnected) parent.appendChild(host);
   }
 
+  function paintPill(pill, result) {
+    if (!pill || !result) return;
+    const mode = result.mode || "";
+    const fallback = result.fallbackReason || result.label === "offline";
+    let state = result.state || "signal";
+    let text = result.label || "local score";
+    if (result.label === "loading" || state === "pending") {
+      state = result.label === "loading" ? "loading" : "pending";
+      text = result.label || "pending";
+    } else if (fallback && mode === "mock") {
+      state = "offline";
+      text =
+        typeof result.score === "number"
+          ? `local score ${Math.round(result.score * 100)} · heuristics`
+          : "models unavailable · heuristics";
+    } else if (typeof result.score === "number") {
+      text = `local score ${Math.round(result.score * 100)}`;
+      state = "signal";
+    } else if (result.label === "offline") {
+      state = "offline";
+      text = "models unavailable";
+    }
+    pill.dataset.state = state;
+    pill.textContent = text;
+    pill.title = TITLE_SIGNAL;
+  }
+
   function requestScore(kind, payload) {
     const id = `ls-${++seq}`;
     return new Promise((resolve) => {
@@ -116,7 +169,7 @@
         chrome.runtime.sendMessage({ type: kind, id, ...payload }, (resp) => {
           if (chrome.runtime.lastError) {
             pending.delete(id);
-            resolve({ label: "offline", state: "pending" });
+            resolve({ label: "offline", state: "offline", mode: "mock" });
             return;
           }
           if (resp) {
@@ -126,54 +179,67 @@
         });
       } catch (_) {
         pending.delete(id);
-        resolve({ label: "offline", state: "pending" });
+        resolve({ label: "offline", state: "offline", mode: "mock" });
       }
       setTimeout(() => {
         if (pending.has(id)) {
           pending.delete(id);
           resolve({ label: "pending", state: "pending" });
         }
-      }, 8000);
+      }, 12000);
     });
   }
 
   chrome.runtime.onMessage.addListener((msg) => {
-    if (!msg || !msg.id || !pending.has(msg.id)) return;
-    const resolve = pending.get(msg.id);
-    pending.delete(msg.id);
-    resolve(msg);
+    if (!msg) return;
+    if (msg.type === "teardownBadges") {
+      teardownAll(true);
+      globalThis.__lucidScanContentLoaded = false;
+      return;
+    }
+    if (msg.id && pending.has(msg.id)) {
+      const resolve = pending.get(msg.id);
+      pending.delete(msg.id);
+      resolve(msg);
+    }
   });
 
-  async function enqueueImage(img) {
-    if (!badgeModeEnabled || !img || scoredImgs.has(img)) return;
-    const w = img.naturalWidth || img.width || 0;
-    const h = img.naturalHeight || img.height || 0;
-    if (w < MIN_IMG || h < MIN_IMG) return;
-    if (!img.src && !img.currentSrc) return;
+  function pumpQueue() {
+    while (inFlight < MAX_CONCURRENT && scoreQueue.length) {
+      const job = scoreQueue.shift();
+      inFlight++;
+      Promise.resolve()
+        .then(job)
+        .catch(() => {})
+        .finally(() => {
+          inFlight--;
+          pumpQueue();
+        });
+    }
+  }
 
+  function enqueueImage(img) {
+    if (!badgeModeEnabled || !img || scoredImgs.has(img) || isSkippableImg(img)) return;
     scoredImgs.set(img, true);
-    let entry = imgHosts.get(img);
-    if (!entry) {
-      entry = mountShadowHost(img, "absolute");
-      imgHosts.set(img, entry);
-      placeImageBadge(img, entry.host);
-    }
-    entry.pill.dataset.state = "pending";
-    entry.pill.textContent = "pending";
-
-    const src = img.currentSrc || img.src;
-    const dataUrl = imageToDataUrl(img);
-    const cacheKey = hashStr(src || dataUrl || "");
-    const result = await requestScore("scoreImage", { src, dataUrl, cacheKey });
-    if (!imgHosts.has(img)) return;
-    entry.pill.dataset.state = result.state || "signal";
-    if (result.label === "loading" || result.state === "pending") {
-      entry.pill.textContent = result.label || "pending";
-    } else if (typeof result.score === "number") {
-      entry.pill.textContent = `local score ${Math.round(result.score * 100)}`;
-    } else {
-      entry.pill.textContent = result.label || "local score";
-    }
+    scoreQueue.push(async () => {
+      if (!badgeModeEnabled || !img.isConnected) return;
+      let entry = imgHosts.get(img);
+      if (!entry) {
+        entry = mountShadowHost("absolute");
+        imgHosts.set(img, entry);
+        placeImageBadge(img, entry.host);
+      }
+      entry.pill.dataset.state = "pending";
+      entry.pill.textContent = "pending";
+      entry.pill.title = TITLE_SIGNAL;
+      const src = img.currentSrc || img.src;
+      const dataUrl = imageToDataUrl(img);
+      const cacheKey = hashStr(src || dataUrl || "");
+      const result = await requestScore("scoreImage", { src, dataUrl, cacheKey });
+      if (!imgHosts.has(img)) return;
+      paintPill(entry.pill, result);
+    });
+    pumpQueue();
   }
 
   const io = new IntersectionObserver(
@@ -182,14 +248,18 @@
         if (e.isIntersecting) enqueueImage(e.target);
       }
     },
-    { root: null, rootMargin: "64px", threshold: 0.01 }
+    { root: null, rootMargin: "80px", threshold: 0.01 }
   );
 
   function observeImg(img) {
-    if (!img || imgHosts.has(img) || scoredImgs.has(img)) {
-      if (img && !scoredImgs.has(img)) io.observe(img);
+    if (!img || scoredImgs.has(img)) return;
+    const hasSrc = !!(img.src || img.currentSrc);
+    if (hasSrc && !img.complete) {
+      img.addEventListener("load", () => observeImg(img), { once: true });
+      img.addEventListener("error", () => {}, { once: true });
       return;
     }
+    if (isSkippableImg(img)) return;
     io.observe(img);
   }
 
@@ -198,24 +268,47 @@
     document.querySelectorAll("img").forEach(observeImg);
   }
 
+  function flushMutations() {
+    moQueued = false;
+    if (!badgeModeEnabled) {
+      pendingNodes = [];
+      return;
+    }
+    const nodes = pendingNodes;
+    pendingNodes = [];
+    for (const n of nodes) {
+      if (!n || n.nodeType !== 1) continue;
+      if (n.tagName === "IMG") observeImg(n);
+      else if (n.querySelectorAll) n.querySelectorAll("img").forEach(observeImg);
+    }
+  }
+
+  function scheduleMutationFlush() {
+    if (moQueued) return;
+    moQueued = true;
+    const run = () => flushMutations();
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(() => requestAnimationFrame(run), { timeout: 200 });
+    } else {
+      requestAnimationFrame(run);
+    }
+  }
+
   const mo = new MutationObserver((mutations) => {
     if (!badgeModeEnabled) return;
     for (const m of mutations) {
-      for (const n of m.addedNodes) {
-        if (n.nodeType !== 1) continue;
-        if (n.tagName === "IMG") observeImg(n);
-        else if (n.querySelectorAll) n.querySelectorAll("img").forEach(observeImg);
-      }
+      for (const n of m.addedNodes) pendingNodes.push(n);
     }
+    scheduleMutationFlush();
   });
 
   function ensureTextChip() {
     if (textChip) return;
-    const mounted = mountShadowHost(document.documentElement, "fixed");
+    const mounted = mountShadowHost("fixed");
     textChip = mounted.host;
-    textChipRoot = mounted.root;
     textChipLabel = mounted.pill;
     textChip.style.display = "none";
+    textChip.setAttribute("aria-label", "LucidScan local score for selection");
     document.documentElement.appendChild(textChip);
   }
 
@@ -229,7 +322,6 @@
     if (!sel || sel.isCollapsed || !sel.rangeCount) return hideTextChip();
     const text = String(sel).trim();
     if (text.length < 12) return hideTextChip();
-
     const range = sel.getRangeAt(0);
     const box = range.getBoundingClientRect();
     if (!box || (box.width === 0 && box.height === 0)) return hideTextChip();
@@ -240,20 +332,16 @@
     textChip.style.left = `${Math.max(4, box.left)}px`;
     textChipLabel.dataset.state = "pending";
     textChipLabel.textContent = "pending";
+    textChipLabel.title = TITLE_SIGNAL;
 
     const result = await requestScore("scoreText", { text: text.slice(0, 4000) });
     if (!window.getSelection() || String(window.getSelection()).trim() !== text) return;
-    textChipLabel.dataset.state = result.state || "signal";
-    if (typeof result.score === "number") {
-      textChipLabel.textContent = `local score ${Math.round(result.score * 100)}`;
-    } else {
-      textChipLabel.textContent = result.label || "local score";
-    }
+    paintPill(textChipLabel, result);
   }
 
   function debouncedSelection() {
     clearTimeout(selectionTimer);
-    selectionTimer = setTimeout(onSelectionChange, 220);
+    selectionTimer = setTimeout(onSelectionChange, SELECTION_DEBOUNCE_MS);
   }
 
   function repositionChip() {
@@ -265,16 +353,48 @@
     textChip.style.left = `${Math.max(4, box.left)}px`;
   }
 
-  function teardownAll() {
-    io.disconnect();
+  function teardownAll(hard = false) {
+    scoreQueue.length = 0;
     for (const { host } of imgHosts.values()) host.remove();
     imgHosts.clear();
     hideTextChip();
     if (textChip) {
       textChip.remove();
-      textChip = textChipRoot = textChipLabel = null;
+      textChip = textChipLabel = null;
+    }
+    if (hard) {
+      try { io.disconnect(); } catch (_) {}
+      try { mo.disconnect(); } catch (_) {}
     }
   }
+
+  function ensureObservers() {
+    try {
+      mo.observe(document.documentElement, { childList: true, subtree: true });
+    } catch (_) {}
+  }
+
+  function rebindAfterSoftNav() {
+    if (!badgeModeEnabled) return;
+    ensureObservers();
+    scanImages();
+  }
+
+  // History API / SPA soft navigation without extra permissions
+  const _push = history.pushState.bind(history);
+  const _replace = history.replaceState.bind(history);
+  history.pushState = function (...args) {
+    const r = _push(...args);
+    queueMicrotask(rebindAfterSoftNav);
+    return r;
+  };
+  history.replaceState = function (...args) {
+    const r = _replace(...args);
+    queueMicrotask(rebindAfterSoftNav);
+    return r;
+  };
+  window.addEventListener("popstate", rebindAfterSoftNav);
+  window.addEventListener("hashchange", rebindAfterSoftNav);
 
   document.addEventListener("selectionchange", debouncedSelection);
   window.addEventListener("scroll", repositionChip, true);
@@ -283,14 +403,7 @@
     if (e.key === "Escape") hideTextChip();
   });
 
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg && msg.type === "teardownBadges") {
-      teardownAll();
-      globalThis.__lucidScanContentLoaded = false;
-    }
-  });
-
-  mo.observe(document.documentElement, { childList: true, subtree: true });
+  ensureObservers();
   loadSettings();
   scanImages();
 })();

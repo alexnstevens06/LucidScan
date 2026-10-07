@@ -12,16 +12,30 @@
       <p class="tag">Browse-time <strong>local signal</strong> badges — not an authenticity verdict.</p>
     </header>
 
+    <section class="card site-card">
+      <h2>This page</h2>
+      <p id="site-origin" class="origin" title="">Open an http(s) tab</p>
+      <p id="site-state" class="state-pill" data-state="unknown">…</p>
+      <button type="button" id="enable-site" class="btn primary">Enable badges on this site</button>
+      <button type="button" id="disable-site" class="btn danger">Disable badges on this site</button>
+      <p id="status" class="muted" role="status">…</p>
+    </section>
+
     <section class="card">
-      <p class="muted" id="site-line">Site: …</p>
-      <button type="button" id="enable-site" class="btn">Enable badges on this site</button>
-      <button type="button" id="disable-site" class="btn secondary">Disable badges on this site</button>
-      <label class="row" style="margin-top:10px">
-        <span>Pause badges (global)</span>
+      <h2>Enabled sites</h2>
+      <ul id="site-list" class="site-list" aria-label="Enabled origins"></ul>
+      <button type="button" id="clear-all" class="btn secondary">Clear all enabled sites</button>
+    </section>
+
+    <section class="card">
+      <h2>Controls</h2>
+      <label class="row" title="Hides badges on every enabled site without revoking site access">
+        <span>Pause badges everywhere <span class="hint">(global)</span></span>
         <input type="checkbox" id="badge-toggle" checked />
       </label>
+      <p class="hint-block">Pause does <strong>not</strong> disable a site. Use Disable / Clear all to stop injection.</p>
       <button type="button" id="warmup" class="btn secondary">Load local models</button>
-      <p id="status" class="muted">Inference: …</p>
+      <p id="model-status" class="muted">Models: …</p>
     </section>
 
     <section class="card" id="last-scan-card">
@@ -34,11 +48,10 @@
     <section class="card about">
       <h2>About / licenses</h2>
       <ul>
-        <li>Badges inject <strong>only after</strong> you enable them for the current site (optional host permission + content script registration).</li>
-        <li>Default models: Transformers.js + <code>onnx-community/tmr-ai-text-detector-ONNX</code> (MIT) and CLIP ViT-B/32 <code>Xenova/clip-vit-base-patch32</code> (CLIP code MIT; model-card deployed use out of scope).</li>
-        <li>Models download from Hugging Face on first use into the browser cache (local/dev). WASM/ORT is vendored under <code>lib/</code>.</li>
-        <li>Optional Flask + Desklib/CLIP-large remains a power-user desktop path — not the default badge stack.</li>
-        <li>Images are scored in-tab ephemerally; do not scrape or resell site media.</li>
+        <li>Badges inject <strong>only after</strong> <em>Enable badges on this site</em>.</li>
+        <li>Models: Transformers.js + TMR ONNX (MIT) and CLIP ViT-B/32 (CLIP code MIT; model-card deployed use out of scope).</li>
+        <li>First run downloads weights from Hugging Face into the browser cache (local/dev).</li>
+        <li>Do not scrape or resell site media — scoring is in-tab and ephemeral.</li>
       </ul>
     </section>
   </main>

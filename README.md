@@ -4,6 +4,22 @@ Local browse-time **signal** badges for Chrome (MV3), plus an optional Flask des
 
 Badges are a **local signal only** — not an authenticity verdict. The UI never claims “AI verified”, “100% human”, or similar.
 
+
+## Quick start (Load unpacked + Enable)
+
+```text
+1. chrome://extensions → Developer mode ON
+2. Load unpacked → select the chrome_plugin/ folder
+3. Open an http(s) page (from chrome_plugin/: python3 -m http.server 8765)
+   then visit http://127.0.0.1:8765/test/sample.html
+4. Click the LucidScan icon → Enable badges on this site → Allow
+5. Confirm image corner pills / selection chip show “local score …”
+6. Optional: Enabled sites list → Disable / Clear all
+7. Optional: Pause badges everywhere (global) to hide without revoking sites
+```
+
+Badges never claim authenticity. First inference may download HF models into the browser cache.
+
 ## Chrome extension (primary)
 
 Load unpacked from `chrome_plugin/`:

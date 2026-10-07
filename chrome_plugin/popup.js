@@ -20,38 +20,109 @@ function paintLastScan(scan) {
   circle.style.background = `conic-gradient(#6bc4a0 ${pct}%, #2a3b55 ${pct}%)`;
 }
 
-function formatStatus(resp) {
-  if (!resp) return "Inference: starting…";
+function formatModelStatus(resp) {
+  if (!resp) return "Models: starting…";
   const mode = resp.mode || "transformers";
   const t = resp.text || "?";
   const i = resp.image || "?";
   const td = resp.textDevice ? `/${resp.textDevice}` : "";
   const id = resp.imageDevice ? `/${resp.imageDevice}` : "";
-  return `Inference: ${mode} — text ${t}${td}, image ${i}${id}`;
+  let line = `Models: ${mode} — text ${t}${td}, image ${i}${id}`;
+  if (t === "error" || i === "error") {
+    line += " · models unavailable — local heuristics only";
+  } else if (mode === "mock") {
+    line += " · heuristics fallback";
+  }
+  return line;
+}
+
+function renderSiteList(origins) {
+  const ul = document.getElementById("site-list");
+  ul.innerHTML = "";
+  if (!origins || !origins.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "No sites enabled yet.";
+    ul.appendChild(li);
+    return;
+  }
+  for (const origin of origins) {
+    const li = document.createElement("li");
+    const span = document.createElement("span");
+    span.textContent = origin;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn tiny";
+    btn.textContent = "Disable";
+    btn.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ type: "disableBadgeOrigin", origin }, () => {
+        refreshAll();
+      });
+    });
+    li.append(span, btn);
+    ul.appendChild(li);
+  }
 }
 
 function refreshSiteStatus() {
-  const siteLine = document.getElementById("site-line");
+  const originEl = document.getElementById("site-origin");
+  const stateEl = document.getElementById("site-state");
   const enableBtn = document.getElementById("enable-site");
   const disableBtn = document.getElementById("disable-site");
   chrome.runtime.sendMessage({ type: "getSiteBadgeStatus" }, (resp) => {
     if (chrome.runtime.lastError) {
-      siteLine.textContent = "Site: (unavailable)";
+      originEl.textContent = "(unavailable)";
+      stateEl.textContent = "Unknown";
+      stateEl.dataset.state = "unknown";
       return;
     }
+    renderSiteList(resp && resp.enabledOrigins);
+
     if (!resp || !resp.origin) {
-      siteLine.textContent = "Site: open an http(s) page, then enable badges here.";
+      originEl.textContent = "Open an http(s) page, then enable here.";
+      originEl.title = "";
+      stateEl.textContent = "No page";
+      stateEl.dataset.state = "off";
       enableBtn.disabled = true;
       disableBtn.disabled = true;
+      enableBtn.hidden = false;
+      disableBtn.hidden = true;
       return;
     }
+
+    originEl.textContent = resp.origin;
+    originEl.title = resp.tabUrl || resp.origin;
     enableBtn.disabled = false;
     disableBtn.disabled = false;
-    const state = resp.enabled ? "ON" : "OFF";
-    siteLine.textContent = `Site: ${resp.origin} — badges ${state}`;
-    enableBtn.style.display = resp.enabled ? "none" : "block";
-    disableBtn.style.display = resp.enabled ? "block" : "none";
+
+    if (resp.enabled) {
+      stateEl.textContent = "Badges ON for this site";
+      stateEl.dataset.state = "on";
+      enableBtn.hidden = true;
+      disableBtn.hidden = false;
+    } else {
+      stateEl.textContent = "Badges OFF — click Enable";
+      stateEl.dataset.state = "off";
+      enableBtn.hidden = false;
+      disableBtn.hidden = true;
+    }
   });
+}
+
+function refreshModels() {
+  const modelStatus = document.getElementById("model-status");
+  chrome.runtime.sendMessage({ type: "getInferenceStatus" }, (resp) => {
+    if (chrome.runtime.lastError) {
+      modelStatus.textContent = "Models: starting…";
+      return;
+    }
+    modelStatus.textContent = formatModelStatus(resp);
+  });
+}
+
+function refreshAll() {
+  refreshSiteStatus();
+  refreshModels();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -59,10 +130,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const status = document.getElementById("status");
   const enableBtn = document.getElementById("enable-site");
   const disableBtn = document.getElementById("disable-site");
+  const clearAll = document.getElementById("clear-all");
   const warmupBtn = document.getElementById("warmup");
 
   chrome.storage.local.get({ badgeModeEnabled: true, lastScan: null }, (r) => {
-    // checked = badges not paused
     toggle.checked = r.badgeModeEnabled !== false;
     paintLastScan(r.lastScan);
   });
@@ -70,12 +141,12 @@ document.addEventListener("DOMContentLoaded", () => {
   toggle.addEventListener("change", () => {
     chrome.storage.local.set({ badgeModeEnabled: toggle.checked });
     status.textContent = toggle.checked
-      ? "Global pause off — badges run on enabled sites."
-      : "Global pause on — badges hidden until re-enabled.";
+      ? "Global pause off — badges can show on enabled sites."
+      : "Paused everywhere — site enables kept; badges hidden.";
   });
 
   enableBtn.addEventListener("click", () => {
-    status.textContent = "Requesting permission and injecting badges…";
+    status.textContent = "Requesting permission and injecting…";
     chrome.runtime.sendMessage({ type: "enableBadgesForSite" }, (resp) => {
       if (chrome.runtime.lastError) {
         status.textContent = chrome.runtime.lastError.message;
@@ -83,53 +154,56 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       if (resp && resp.ok) {
         status.textContent = resp.injected
-          ? `Badges enabled for ${resp.origin}`
-          : `Enabled for ${resp.origin} (reload page if badges missing)`;
+          ? `Enabled on ${resp.origin}`
+          : `Enabled on ${resp.origin} — reload if badges missing`;
       } else {
         status.textContent = (resp && resp.error) || "Enable failed.";
       }
-      refreshSiteStatus();
+      refreshAll();
     });
   });
 
   disableBtn.addEventListener("click", () => {
-    status.textContent = "Disabling badges on this site…";
+    status.textContent = "Disabling this site…";
     chrome.runtime.sendMessage({ type: "disableBadgesForSite" }, (resp) => {
-      if (chrome.runtime.lastError) {
-        status.textContent = chrome.runtime.lastError.message;
-        return;
-      }
+      status.textContent =
+        resp && resp.ok ? `Disabled ${resp.origin}` : (resp && resp.error) || "Disable failed.";
+      refreshAll();
+    });
+  });
+
+  clearAll.addEventListener("click", () => {
+    status.textContent = "Clearing all enabled sites…";
+    chrome.runtime.sendMessage({ type: "clearAllBadgeOrigins" }, (resp) => {
       status.textContent =
         resp && resp.ok
-          ? `Badges disabled for ${resp.origin}`
-          : (resp && resp.error) || "Disable failed.";
-      refreshSiteStatus();
+          ? `Cleared ${((resp.cleared || []).length)} site(s)`
+          : (resp && resp.error) || "Clear failed.";
+      refreshAll();
     });
   });
 
   warmupBtn.addEventListener("click", () => {
-    status.textContent = "Loading local models (first run downloads from Hugging Face)…";
+    status.textContent = "Loading models (HF download on first run)…";
     chrome.runtime.sendMessage({ type: "warmupModels", which: "both" }, (resp) => {
       if (chrome.runtime.lastError) {
-        status.textContent = "Warmup error: " + chrome.runtime.lastError.message;
+        status.textContent = chrome.runtime.lastError.message;
         return;
       }
-      status.textContent = formatStatus(resp) + (resp && resp.ok === false ? " (failed)" : "");
+      document.getElementById("model-status").textContent = formatModelStatus(resp);
+      status.textContent =
+        resp && resp.ok === false
+          ? "Models unavailable — local heuristics only"
+          : "Model load finished (see status).";
     });
   });
 
-  chrome.runtime.sendMessage({ type: "getInferenceStatus" }, (resp) => {
-    if (chrome.runtime.lastError) {
-      status.textContent = "Inference: starting…";
-      return;
-    }
-    status.textContent = formatStatus(resp);
-  });
-
-  refreshSiteStatus();
+  refreshAll();
+  status.textContent = "Ready — enable this site to show badges.";
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && changes.lastScan) paintLastScan(changes.lastScan.newValue);
-    if (area === "local" && changes.enabledOrigins) refreshSiteStatus();
+    if (area !== "local") return;
+    if (changes.lastScan) paintLastScan(changes.lastScan.newValue);
+    if (changes.enabledOrigins) refreshSiteStatus();
   });
 });

@@ -119,6 +119,42 @@ async function disableBadgesForTab(tab) {
   return { ok: true, origin: pattern, matches: reg.matches };
 }
 
+async function disableOriginPattern(pattern) {
+  if (!pattern) return { ok: false, error: "Missing origin." };
+  const origins = (await getEnabledOrigins()).filter((o) => o !== pattern);
+  await setEnabledOrigins(origins);
+  const reg = await syncRegisteredContentScripts();
+  try {
+    await chrome.permissions.remove({ origins: [pattern] });
+  } catch (_) {}
+  // Teardown matching tabs best-effort
+  try {
+    const tabs = await chrome.tabs.query({ url: pattern });
+    for (const tab of tabs) {
+      if (tab.id) await teardownInTab(tab.id);
+    }
+  } catch (_) {}
+  return { ok: true, origin: pattern, matches: reg.matches };
+}
+
+async function clearAllEnabledOrigins() {
+  const prev = await getEnabledOrigins();
+  for (const pattern of prev) {
+    try {
+      const tabs = await chrome.tabs.query({ url: pattern });
+      for (const tab of tabs) {
+        if (tab.id) await teardownInTab(tab.id);
+      }
+    } catch (_) {}
+    try {
+      await chrome.permissions.remove({ origins: [pattern] });
+    } catch (_) {}
+  }
+  await setEnabledOrigins([]);
+  await syncRegisteredContentScripts();
+  return { ok: true, cleared: prev };
+}
+
 async function getSiteBadgeStatus(tab) {
   const origins = await getEnabledOrigins();
   const pattern = tab && tab.url ? originPatternFromUrl(tab.url) : null;
@@ -311,6 +347,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         const result = await disableBadgesForTab(tab);
         sendResponse(result);
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "disableBadgeOrigin") {
+    (async () => {
+      try {
+        sendResponse(await disableOriginPattern(msg.origin));
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "clearAllBadgeOrigins") {
+    (async () => {
+      try {
+        sendResponse(await clearAllEnabledOrigins());
       } catch (err) {
         sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
       }
