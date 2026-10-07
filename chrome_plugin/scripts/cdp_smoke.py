@@ -46,9 +46,17 @@ def main():
             time.sleep(0.3)
         assert sw, "service worker target not found"
         print("SW alive:", sw[0]["url"])
-        tid = call("Target.createTarget", {"url": f"http://127.0.0.1:{HTTP}/test/sample.html"})["targetId"]
+        url = f"http://127.0.0.1:{HTTP}/test/sample.html"
+        tid = call("Target.createTarget", {"url": "about:blank"})["targetId"]
         sid = call("Target.attachToTarget", {"targetId": tid, "flatten": True})["sessionId"]
-        time.sleep(3)
+        call("Runtime.evaluate", {"expression": f"location.href = {json.dumps(url)}"}, sid)
+        ev = lambda e: call("Runtime.evaluate", {"expression": e, "returnByValue": True}, sid)["result"].get("value")
+        for _ in range(40):
+            if ev("location.href.includes(sample.html) && document.readyState === complete"): break
+            time.sleep(0.25)
+        time.sleep(2)
+        print("page:", ev("location.href"))
+        assert "sample.html" in (ev("location.href") or ""), "sample page did not load"
         expr = "document.querySelectorAll('[data-lucidscan-host]').length"
         cnt = call("Runtime.evaluate", {"expression": expr, "returnByValue": True}, sid)["result"]["value"]
         imgs = call("Runtime.evaluate", {"expression": "document.images.length", "returnByValue": True}, sid)["result"]["value"]
