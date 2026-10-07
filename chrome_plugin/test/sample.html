@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LucidScan badge sample</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    img { max-width: 100%; height: auto; display: block; margin: 1rem 0; border-radius: 8px; }
+    .tiny { width: 24px; height: 24px; }
+  </style>
+</head>
+<body>
+  <h1>LucidScan sample page</h1>
+  <p>
+    From <code>chrome_plugin/</code> run <code>./test/serve.sh</code> (or <code>python3 -m http.server 8765</code>), load the unpacked extension from <code>chrome_plugin/</code>, open this file via a local
+    static server or drag into Chrome (content scripts need http/https — use
+    <code>python3 -m http.server</code> from the repo). Select this paragraph to see the
+    floating local-score chip (after popup → Load local models / first inference). Images below should show corner badges when visible.
+  </p>
+  <img width="640" height="360" alt="sample wide"
+       src="https://picsum.photos/seed/lucidscan1/640/360" />
+  <p>
+    Another block of text for selection testing. Badges are local signals only and never
+    claim authenticity or “AI verified” status.
+  </p>
+  <img width="320" height="240" alt="sample square"
+       src="https://picsum.photos/seed/lucidscan2/320/240" />
+  <img class="tiny" width="24" height="24" alt="too small to badge"
+       src="https://picsum.photos/seed/lucidscan3/24/24" />
+</body>
+</html>

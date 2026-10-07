@@ -1,0 +1,65 @@
+%%{init: {"theme": "base", "themeVariables": {"fontSize": "17px", "fontFamily": "DejaVu Sans", "lineColor": "#555", "edgeLabelBackground": "#ffffff", "clusterBkg": "#fafbfd", "clusterBorder": "#9aa5b8"}, "flowchart": {"nodeSpacing": 50, "rankSpacing": 70, "curve": "basis", "htmlLabels": true, "wrappingWidth": 400}}}%%
+%% LucidScan v0.4.0 architecture (chrome_plugin/ MV3 + optional Python server).
+%% Matches chrome_plugin/{manifest.json,background.js,content.js,offscreen.js,popup.js} and server.py at 2b99cc1.
+flowchart TB
+  classDef ui fill:#e8f1ff,stroke:#3b6db3,stroke-width:2px,color:#0b2545
+  classDef sw fill:#fff4e0,stroke:#c07a12,stroke-width:2px,color:#3d2600
+  classDef cs fill:#e9f8ef,stroke:#2e8b57,stroke-width:2px,color:#0f3b22
+  classDef off fill:#f3ecff,stroke:#7448c4,stroke-width:2px,color:#2a1260
+  classDef store fill:#f4f4f4,stroke:#666,stroke-width:2px,color:#222
+  classDef ext fill:#ffecec,stroke:#c0392b,stroke-width:2px,color:#4a0d07
+  classDef perm fill:#fffbe6,stroke:#b59b00,stroke-width:2px,color:#3d3400,stroke-dasharray:6 4
+  classDef user fill:#ffffff,stroke:#333,stroke-width:2px,color:#111
+
+  USER(["User"]):::user
+
+  POPUP["<b>Popup</b> (popup.js)<br/>Enable / Disable / Pause this site<br/>Clear all sites<br/>Model progress %, Retry, Cancel watch<br/>Last context-menu result"]:::ui
+
+  subgraph PB["Permissions boundary"]
+    direction LR
+    PROMPT{{"<b>optional_host_permissions</b><br/>Chrome prompt, one origin per Enable click"}}:::perm
+    MENU{{"<b>activeTab + contextMenus</b><br/>right-click text / image / video"}}:::perm
+    RESTR{{"<b>Restricted pages</b> never enabled:<br/>chrome://, file://, Web Store,<br/>view-source:, about:, other extensions"}}:::perm
+  end
+
+  SW["<b>Service worker</b> (background.js)<br/>enabledOrigins / pausedOrigins in storage<br/>registerContentScripts + executeScript<br/>message routing popup / page / offscreen<br/>offscreen create on demand + ping<br/>context-menu handler"]:::sw
+
+  subgraph PAGE["Enabled http(s) page"]
+    direction TB
+    OBS["<b>Content script</b> (content.js)<br/>MutationObserver + IntersectionObserver<br/>visible images only<br/>SPA hooks: pushState, popstate, hashchange"]:::cs
+    PRE["<b>Cheap prefilters</b><br/>tiny image, tiny data: URI, flat 16x16<br/>= local heuristics, no model"]:::cs
+    BADGE["<b>Closed Shadow DOM badges</b><br/>image pill + selection chip (12+ chars)<br/>'local score N' / 'local heuristics'"]:::cs
+  end
+
+  subgraph OFFG["Offscreen document (offscreen.js)"]
+    direction TB
+    RT["<b>Transformers.js 3.8.1 + ORT WASM</b><br/>vendored in lib/ (~21 MB WASM)<br/>WebGPU if available, else WASM 1 thread"]:::off
+    TXT["<b>Text model</b><br/>TMR RoBERTa detector<br/>tmr-ai-text-detector-ONNX q8"]:::off
+    IMG["<b>Image model</b><br/>CLIP ViT-B/32 zero-shot<br/>Xenova/clip-vit-base-patch32"]:::off
+  end
+
+  CACHE[("<b>Image score cache</b><br/>memory LRU + IndexedDB<br/>200 entries, 24 h TTL<br/>key = hash of image src")]:::store
+  HF[("<b>Hugging Face Hub</b><br/>first run only, then<br/>browser cache")]:::ext
+  FLASK[("<b>Optional Flask server</b><br/>localhost:5000 /detect<br/>Desklib text, CLIP-L/14 + ViT<br/>Python, user-started")]:::ext
+
+  USER -- "click" --> POPUP
+  POPUP -- "permissions.request(origin)" --> PROMPT
+  PROMPT -- "permission grant" --> SW
+  POPUP <-- "site actions / model status" --> SW
+  RESTR -. "no injection" .-x SW
+  USER -- "right-click" --> MENU
+  MENU -- "selection text, image or video URL" --> SW
+
+  SW -- "inject content.js" --> OBS
+  OBS --> PRE
+  PRE -- "image pixels (data URL, max 512 px)<br/>or image URL + src hash" --> SW
+  BADGE -- "page text selection (max 4000 chars)" --> SW
+  SW -- "scores 0-1 + mode" --> BADGE
+
+  SW -- "offscreen.scoreText / scoreImage" --> RT
+  RT --> TXT
+  RT --> IMG
+  IMG <-- "get / put by hash" --> CACHE
+  RT -- "GET model weights<br/>(data, not code)" --> HF
+  SW -- "video URL (POST JSON)" --> FLASK
+  FLASK -- "confidence" --> SW
