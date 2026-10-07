@@ -10,7 +10,7 @@ Badges are a **local signal only** — not an authenticity verdict. The UI never
 ```text
 1. chrome://extensions → Developer mode ON
 2. Load unpacked → select the chrome_plugin/ folder
-3. Open an http(s) page (from chrome_plugin/: python3 -m http.server 8765)
+3. From chrome_plugin/: `./test/serve.sh`  (or `PORT=8765 python3 -m http.server 8765`)
    then visit http://127.0.0.1:8765/test/sample.html
 4. Click the LucidScan icon → Enable badges on this site → Allow
 5. Confirm image corner pills / selection chip show “local score …”
@@ -40,6 +40,14 @@ Badges never claim authenticity. First inference may download HF models into the
 - **Restricted URLs:** Enable blocks `file://`, `chrome://`, `chrome-error://`, etc. Serve `test/sample.html` over http(s).
 - **Shortcut:** `Alt+Shift+L` → Enable badges on this site.
 - Still no `webNavigation`; no `addHostAccessRequest`.
+
+
+### Pass-4 behavior notes
+
+- **Model load progress:** popup shows stage/% while HF assets download; Cancel load watch stops UI polling (in-flight fetch may still finish).
+- **Cheap JS prefilters** (before CLIP): skip tiny images, tiny data-URIs, near-flat canvases → labeled **local heuristics** (not a verdict).
+- **Sample harness:** `chrome_plugin/test/serve.sh` serves the extension root over http for Enable-on-localhost.
+- **Selection chip:** repositions with visualViewport; flips below selection if clipped.
 
 ## Chrome extension (primary)
 

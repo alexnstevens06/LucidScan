@@ -388,6 +388,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
 
+  if (msg.type === "cancelModelLoad") {
+    (async () => {
+      try {
+        await ensureOffscreen();
+        const result = await chrome.runtime.sendMessage({ type: "offscreen.cancelLoad" });
+        sendResponse(result || { ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
+      }
+    })();
+    return true;
+  }
+
   if (msg.type === "warmupModels") {
     (async () => {
       try {

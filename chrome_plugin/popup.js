@@ -20,6 +20,69 @@ function paintLastScan(scan) {
   circle.style.background = `conic-gradient(#6bc4a0 ${pct}%, #2a3b55 ${pct}%)`;
 }
 
+
+let progressTimer = null;
+
+function setProgressUI(resp) {
+  const wrap = document.getElementById("progress-wrap");
+  const bar = document.getElementById("progress-bar");
+  const text = document.getElementById("progress-text");
+  const cancel = document.getElementById("cancel-load");
+  const prog = resp && resp.progress;
+  const loading =
+    (resp && (resp.text === "loading" || resp.image === "loading")) ||
+    (prog && prog.status && !["idle", "ready", "cancelled"].includes(prog.status));
+  if (!loading && !(prog && prog.message && prog.status !== "idle")) {
+    wrap.hidden = true;
+    text.hidden = true;
+    cancel.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  text.hidden = false;
+  cancel.hidden = false;
+  const pct = typeof prog?.percent === "number" ? Math.max(0, Math.min(100, prog.percent)) : null;
+  if (pct != null) {
+    bar.style.width = pct + "%";
+    bar.setAttribute("aria-valuenow", String(pct));
+  } else {
+    bar.style.width = "35%";
+    bar.setAttribute("aria-valuenow", "0");
+  }
+  text.textContent = (prog && prog.message) || "Downloading / loading local models…";
+}
+
+function stopProgressPoll() {
+  if (progressTimer) {
+    clearInterval(progressTimer);
+    progressTimer = null;
+  }
+}
+
+function startProgressPoll() {
+  stopProgressPoll();
+  progressTimer = setInterval(() => {
+    chrome.runtime.sendMessage({ type: "getInferenceStatus" }, (resp) => {
+      if (chrome.runtime.lastError) return;
+      document.getElementById("model-status").textContent = formatModelStatus(resp);
+      setProgressUI(resp);
+      const done =
+        resp &&
+        resp.text !== "loading" &&
+        resp.image !== "loading" &&
+        (!resp.progress || ["ready", "idle", "cancelled", "error"].includes(resp.progress.status));
+      if (done && resp && resp.text !== "loading") {
+        // keep polling briefly until both idle/ready/error
+        if (resp.text === "ready" || resp.text === "error" || resp.text === "idle") {
+          if (resp.image === "ready" || resp.image === "error" || resp.image === "idle" || resp.image === "loading") {
+            if (resp.image !== "loading" && resp.text !== "loading") stopProgressPoll();
+          }
+        }
+      }
+    });
+  }, 400);
+}
+
 function formatModelStatus(resp) {
   if (!resp) return "Models: starting…";
   const mode = resp.mode || "transformers";
@@ -252,22 +315,32 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("model-status").dataset.state = "loading";
     document.getElementById("model-status").textContent =
       "Models: loading (first run may download from Hugging Face)…";
+    setProgressUI({ text: "loading", image: "loading", progress: { status: "starting", percent: 0, message: "starting…" } });
+    startProgressPoll();
     chrome.runtime.sendMessage({ type: "warmupModels", which: "both" }, (resp) => {
+      stopProgressPoll();
       if (chrome.runtime.lastError) {
         status.textContent = chrome.runtime.lastError.message;
         document.getElementById("model-status").dataset.state = "error";
+        setProgressUI(null);
         return;
       }
       document.getElementById("model-status").textContent = formatModelStatus(resp);
-      const bad =
-        !resp ||
-        resp.ok === false ||
-        (resp.text && resp.text.status === "error") ||
-        (resp.image && resp.image.status === "error");
+      setProgressUI(resp);
+      const textBad = resp && (resp.text === "error" || (resp.text && resp.text.status === "error"));
+      const imageBad = resp && (resp.image === "error" || (resp.image && resp.image.status === "error"));
+      const bad = !resp || resp.ok === false || textBad || imageBad || resp.cancelled;
       document.getElementById("model-status").dataset.state = bad ? "error" : "ok";
-      status.textContent = bad
-        ? "Models unavailable — local heuristics only (retry anytime)."
-        : "Model load finished.";
+      status.textContent = resp && resp.cancelled
+        ? "Load cancelled — local heuristics may be used until models load."
+        : bad
+          ? "Models unavailable — local heuristics only (retry anytime)."
+          : "Model load finished.";
+      if (!bad) {
+        document.getElementById("progress-wrap").hidden = true;
+        document.getElementById("progress-text").hidden = true;
+        document.getElementById("cancel-load").hidden = true;
+      }
     });
   }
 

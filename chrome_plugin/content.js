@@ -60,6 +60,52 @@
     return (h >>> 0).toString(16);
   }
 
+
+  /**
+   * Cheap JS prefilters before CLIP (heuristics only — not authenticity).
+   * Returns { skip: true, reason } or { skip: false }.
+   */
+  function cheapImagePrefilter(img, dataUrl) {
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    if (w > 0 && h > 0 && (w < MIN_IMG || h < MIN_IMG)) {
+      return { skip: true, reason: "tiny" };
+    }
+    const src = img.currentSrc || img.src || "";
+    if (src.startsWith("data:") && src.length < 800) {
+      return { skip: true, reason: "tiny-data-uri" };
+    }
+    // Solid-color / near-empty canvas sample (very cheap, small draw)
+    try {
+      const cw = Math.min(16, w || 16);
+      const ch = Math.min(16, h || 16);
+      if (cw >= 4 && ch >= 4 && img.complete) {
+        const c = document.createElement("canvas");
+        c.width = cw;
+        c.height = ch;
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, cw, ch);
+        const data = ctx.getImageData(0, 0, cw, ch).data;
+        let sum = 0;
+        let sumSq = 0;
+        const n = cw * ch;
+        for (let i = 0; i < data.length; i += 4) {
+          const y = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+          sum += y;
+          sumSq += y * y;
+        }
+        const mean = sum / n;
+        const variance = sumSq / n - mean * mean;
+        if (variance < 4) {
+          return { skip: true, reason: "flat" };
+        }
+      }
+    } catch (_) {
+      // tainted / security — do not skip; let model path or heuristics handle
+    }
+    return { skip: false };
+  }
+
   function imageToDataUrl(img) {
     try {
       const nw = img.naturalWidth || img.width || 0;
@@ -173,7 +219,7 @@
     let text = result.label || "local score";
     if (result.label === "loading" || state === "pending") {
       state = result.label === "loading" ? "loading" : "pending";
-      text = result.label || "pending";
+      text = result.label === "loading" ? "…" : (result.label || "…");
     } else if (fallback || result.heuristics || mode === "mock") {
       state = "offline";
       text =
@@ -267,6 +313,18 @@
       entry.pill.title = TITLE_SIGNAL;
       const src = img.currentSrc || img.src;
       const dataUrl = imageToDataUrl(img);
+      const pre = cheapImagePrefilter(img, dataUrl);
+      if (pre.skip) {
+        paintPill(entry.pill, {
+          score: 0.5,
+          label: "local heuristics",
+          state: "offline",
+          mode: "mock",
+          heuristics: true,
+          prefilter: pre.reason,
+        });
+        return;
+      }
       const cacheKey = hashStr(src || dataUrl || "");
       const result = await requestScore("scoreImage", { src, dataUrl, cacheKey });
       if (!imgHosts.has(img)) return;
@@ -388,8 +446,9 @@
     textChip.style.top = `${Math.max(4, box.top - 28)}px`;
     textChip.style.left = `${Math.max(4, box.left)}px`;
     textChipLabel.dataset.state = "pending";
-    textChipLabel.textContent = "pending";
+    textChipLabel.textContent = "…";
     textChipLabel.title = TITLE_SIGNAL;
+    repositionChip();
 
     const gen = jobGeneration;
     const result = await new Promise((resolve) => {
@@ -417,8 +476,19 @@
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount || sel.isCollapsed) return hideTextChip();
     const box = sel.getRangeAt(0).getBoundingClientRect();
-    textChip.style.top = `${Math.max(4, box.top - 28)}px`;
-    textChip.style.left = `${Math.max(4, box.left)}px`;
+    if (!box || (box.width === 0 && box.height === 0)) return hideTextChip();
+    const vv = window.visualViewport;
+    const viewW = vv ? vv.width : window.innerWidth;
+    const viewH = vv ? vv.height : window.innerHeight;
+    const chipW = textChip.offsetWidth || 120;
+    const chipH = textChip.offsetHeight || 24;
+    // Prefer above selection; if clipped, place below
+    let top = box.top - chipH - 6;
+    if (top < 4) top = Math.min(viewH - chipH - 4, box.bottom + 6);
+    let left = box.left;
+    left = Math.max(4, Math.min(left, viewW - chipW - 4));
+    textChip.style.top = `${Math.round(top)}px`;
+    textChip.style.left = `${Math.round(left)}px`;
   }
 
   function teardownAll(hard = false) {
@@ -503,6 +573,10 @@
   document.addEventListener("selectionchange", debouncedSelection);
   window.addEventListener("scroll", repositionChip, true);
   window.addEventListener("resize", repositionChip);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", repositionChip);
+    window.visualViewport.addEventListener("scroll", repositionChip);
+  }
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") hideTextChip();
   });

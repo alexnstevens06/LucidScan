@@ -148,3 +148,20 @@ kbd {
   background: #101826;
 }
 .state-pill[data-state="unknown"] { opacity: 0.8; }
+
+.progress-wrap {
+  margin-top: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #101826;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #3a7ef0, #6bc4a0);
+  transition: width 0.2s ease;
+}
+.progress-text { margin-top: 6px; font-size: 11px; }
+.chip-note { font-size: 11px; color: var(--muted); }

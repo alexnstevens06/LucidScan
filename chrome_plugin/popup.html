@@ -35,6 +35,11 @@
       <button type="button" id="warmup" class="btn secondary">Load local models</button>
       <button type="button" id="retry-models" class="btn secondary">Retry model load</button>
       <p id="model-status" class="muted" data-state="unknown">Models: …</p>
+      <div id="progress-wrap" class="progress-wrap" hidden>
+        <div id="progress-bar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+      </div>
+      <p id="progress-text" class="muted progress-text" hidden></p>
+      <button type="button" id="cancel-load" class="btn secondary" hidden>Cancel load watch</button>
     </section>
 
     <section class="card" id="last-scan-card">

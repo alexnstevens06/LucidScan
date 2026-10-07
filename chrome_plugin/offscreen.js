@@ -154,6 +154,8 @@ let textError = null;
 let imageError = null;
 let preferMock = false;
 let deviceUsed = { text: null, image: null };
+let loadProgress = { which: null, status: "idle", percent: null, file: null, message: null };
+let loadCancelled = false;
 
 function configureEnv() {
   env.allowLocalModels = false;
@@ -262,21 +264,61 @@ async function canUseWebGPU() {
   }
 }
 
-async function createPipe(task, model, dtype) {
+function makeProgressHandler(which) {
+  return (info) => {
+    if (loadCancelled) return;
+    const status = info && info.status ? String(info.status) : "progress";
+    let percent = null;
+    if (typeof info?.progress === "number") percent = Math.round(info.progress);
+    else if (typeof info?.loaded === "number" && typeof info?.total === "number" && info.total > 0) {
+      percent = Math.round((100 * info.loaded) / info.total);
+    }
+    const file = info?.file ? String(info.file).split("/").pop() : null;
+    loadProgress = {
+      which,
+      status,
+      percent,
+      file,
+      message:
+        percent != null
+          ? `${which}: ${status} ${percent}%${file ? " · " + file : ""}`
+          : `${which}: ${status}${file ? " · " + file : ""}`,
+    };
+  };
+}
+
+async function createPipe(task, model, dtype, which = "model") {
   // Prefer WebGPU only when an adapter exists; otherwise WASM (ORT).
   const attempts = [];
   if (await canUseWebGPU()) {
     attempts.push({ device: "webgpu", dtype, label: "webgpu" });
   }
   attempts.push({ device: "wasm", dtype, label: "wasm" });
-  // Final fallback: let Transformers.js pick a backend
   attempts.push({ dtype, label: "auto" });
 
   let lastErr = null;
   for (const opts of attempts) {
+    if (loadCancelled) throw new Error("load cancelled");
     try {
       const { label, ...pipelineOpts } = opts;
-      const pipe = await pipeline(task, model, pipelineOpts);
+      loadProgress = {
+        which,
+        status: "starting",
+        percent: 0,
+        file: null,
+        message: `${which}: starting (${label})…`,
+      };
+      const pipe = await pipeline(task, model, {
+        ...pipelineOpts,
+        progress_callback: makeProgressHandler(which),
+      });
+      loadProgress = {
+        which,
+        status: "ready",
+        percent: 100,
+        file: null,
+        message: `${which}: ready (${label})`,
+      };
       return { pipe, device: label };
     } catch (err) {
       lastErr = err;
@@ -301,7 +343,7 @@ async function ensureTextPipe() {
   textStatus = "loading";
   textError = null;
   try {
-    const { pipe, device } = await createPipe("text-classification", TEXT_MODEL, "q8");
+    const { pipe, device } = await createPipe("text-classification", TEXT_MODEL, "q8", "text");
     textPipe = pipe;
     deviceUsed.text = device;
     textStatus = "ready";
@@ -335,9 +377,9 @@ async function ensureImagePipe() {
     // fp16 on webgpu when possible; q8/wasm fallback via createPipe dtype
     let pipe, device;
     try {
-      ({ pipe, device } = await createPipe("zero-shot-image-classification", IMAGE_MODEL, "fp16"));
+      ({ pipe, device } = await createPipe("zero-shot-image-classification", IMAGE_MODEL, "fp16", "image"));
     } catch {
-      ({ pipe, device } = await createPipe("zero-shot-image-classification", IMAGE_MODEL, "q8"));
+      ({ pipe, device } = await createPipe("zero-shot-image-classification", IMAGE_MODEL, "q8", "image"));
     }
     imagePipe = pipe;
     deviceUsed.image = device;
@@ -396,9 +438,6 @@ async function scoreText(text, overrides = null) {
   try {
     // Fire-and-forget if idle so first call can also show loading via race with content timeout
     const pipePromise = ensureTextPipe();
-    if (textStatus === "loading") {
-      // still loading after ensure kicked
-    }
     const pipe = await pipePromise;
     const out = await pipe(sample);
     const score = textOutputToScore(out);
@@ -456,6 +495,7 @@ async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
 
 async function warmup(which = "both", overrides = null) {
   await loadSettings(overrides);
+  loadCancelled = false;
   const out = {};
   if (which === "text" || which === "both") {
     try {
@@ -487,8 +527,11 @@ function statusPayload() {
     imageModel: IMAGE_MODEL,
     textError,
     imageError,
+    progress: { ...loadProgress },
+    cancelled: loadCancelled,
   };
 }
+
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || !msg.type || !String(msg.type).startsWith("offscreen.")) return;
@@ -521,6 +564,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.type === "offscreen.warmup") {
         const warm = await warmup(msg.which || "both", msg);
         sendResponse({ ok: true, ...warm, ...statusPayload() });
+        return;
+      }
+      if (msg.type === "offscreen.cancelLoad") {
+        loadCancelled = true;
+        loadProgress = { which: loadProgress.which, status: "cancelled", percent: null, file: null, message: "load cancelled" };
+        sendResponse({ ok: true, ...statusPayload() });
+        return;
+      }
+      if (msg.type === "offscreen.getProgress") {
+        sendResponse(statusPayload());
         return;
       }
     } catch (err) {
