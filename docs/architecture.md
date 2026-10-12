@@ -23,7 +23,7 @@ Source: [`architecture.mmd`](architecture.mmd) (Mermaid) · vector: [`architectu
 | Image score cache | `offscreen.js` | In-memory LRU + IndexedDB `lucidscan-cache`, ≤200 entries, 24 h TTL, keyed by a hash of the image src | Hash → cached score |
 | Hugging Face Hub | (remote) | First-run download of ONNX weights + tokenizer/config into the browser cache | HTTP GET from the extension → model files |
 | Optional Flask server | `server.py`, `detect.py`, `text_detection.py` | Power-user Python path on `localhost:5000/detect`; the extension uses it only for **Scan this video** | Video URL (POST JSON) → confidence |
-| Permissions | `manifest.json` | `optional_host_permissions` (`http://*/*`, `https://*/*`, granted one origin at a time), `activeTab`, `contextMenus`, `scripting`, `storage`, `offscreen`; fixed host perms for `localhost:5000` and Hugging Face | — |
+| Permissions | `manifest.json` | `optional_host_permissions` (`http://*/*`, `https://*/*`, granted one origin at a time), plus optional `http://localhost:5000/*`; `activeTab` (exposes `tab.url` for Enable / `Alt+Shift+L`), `contextMenus`, `scripting`, `storage`, `offscreen`; **no** required `host_permissions` (HF downloads work via CORS) | — |
 
 ## Notes from reading the code
 

@@ -43,7 +43,7 @@ python3 chrome_plugin/scripts/cdp_smoke.py   # optional: headless Chrome, Extens
 - Cross-origin iframes are not scanned unless that origin is enabled separately; same-origin iframes may be.
 - Restricted pages (`chrome://`, `file://`, Web Store, `view-source:`, other extensions) cannot be enabled.
 - Cross-origin images that taint the canvas skip the flat-image prefilter and are sent by URL instead of a canvas copy.
-- First run needs network (~tens of MB text model + ~85 MB CLIP); later loads use the browser cache.
+- First run downloads about **435 MB** from Hugging Face (≈129 MB text + ≈306 MB CLIP fp16; measured, see below); later loads use the browser cache.
 - Granting host permission needs a real click, so automated tests stop at "0 badges before Enable".
 - Scores are an uncalibrated local signal, not a verdict.
 
@@ -88,21 +88,37 @@ See `docs/lucidscan-mv3-local.md` for the full research pack.
 
 Weights are **not** shipped in git. On first inference (or popup → **Load local models**), Transformers.js downloads from Hugging Face into the browser cache:
 
-| Pipeline | Model id | Ballpark download |
-|----------|----------|-------------------|
-| Text (q8) | `onnx-community/tmr-ai-text-detector-ONNX` | on the order of **tens of MB** (RoBERTa-base ONNX q8) |
-| Images | `Xenova/clip-vit-base-patch32` | often cited ~**85 MB** class for CLIP ViT-B/32 ONNX |
-| Runtime (vendored) | `chrome_plugin/lib/*` | ~**22 MB** ORT WASM + Transformers.js bundle (already in the extension folder) |
+| Pipeline | Model id @ pinned revision | Files fetched | Bytes |
+|----------|----------------------------|---------------|-------|
+| Text (q8) | `onnx-community/tmr-ai-text-detector-ONNX` @ `b9aa251e` | `onnx/model_quantized.onnx` (125,855,418) + `tokenizer.json` + `tokenizer_config.json` + `config.json` | **129,416,379** (≈129 MB) |
+| Images (fp16) | `Xenova/clip-vit-base-patch32` @ `d15189d7` | `onnx/model_fp16.onnx` (303,515,168) + `tokenizer.json` + `tokenizer_config.json` + `config.json` + `preprocessor_config.json` | **305,745,106** (≈306 MB) |
+| **Total first run** | | | **435,161,485 bytes ≈ 435 MB (415 MiB)** |
+| Runtime (vendored) | `chrome_plugin/lib/*` | ORT WASM + Transformers.js bundle, already in the extension folder | ~22 MB, not downloaded |
 
-Exact bytes vary by dtype/device (WebGPU fp16 vs WASM q8). Use a network connection the first time; later loads hit the browser cache.
+How this was measured (2026-10-11, Chrome 154, CPU/WASM, fresh profile via `demo_capture.py`): the cached URLs in the profile's CacheStorage were exactly the 9 files above, the CacheStorage directory was 435,167,703 bytes, and the per-file sizes come from the Hugging Face file listing (`/api/models/<id>?blobs=true`) at the pinned revisions. CLIP loads fp16 first (WebGPU and WASM both accepted it here). Only if fp16 fails does it fall back to `onnx/model_quantized.onnx` (153,695,702), which makes the image download ≈156 MB (≈285 MB total), plus whatever fp16 bytes were already fetched.
+
+Revisions are pinned in `chrome_plugin/offscreen.js` (`MODEL_REVISIONS`). Bumping a SHA starts a new first-run download, because the browser cache is keyed by URL and the URL includes the revision.
 
 ### Automated smoke note (tower / CI)
 
-Branded Chrome 137+ ignores `--load-extension`. `cdp_smoke.py` uses CDP `Extensions.loadUnpacked` with `--enable-unsafe-extension-debugging` (verified on Chrome 154). Chrome offscreen documents may not expose `chrome.storage`; LucidScan keeps settings in the service worker / popup.
+Branded Chrome 137+ ignores `--load-extension`. `cdp_smoke.py` uses CDP `Extensions.loadUnpacked` with `--enable-unsafe-extension-debugging` (verified on Chrome 154). Chrome offscreen documents do not expose `chrome.storage`. The offscreen document asks the service worker (`getOffscreenSettings`) for `autoWarmup` / `inferenceMode` / `forceMock`, and the text model auto-warms from that. `demo_capture.py` checks this before it sends any explicit warmup and flags any `chrome.storage` error in the offscreen console.
+
+### Permissions (and why)
+
+| Permission | Why |
+|---|---|
+| `optional_host_permissions` `http://*/*`, `https://*/*` | Granted one site at a time when you click **Enable badges on this site** (or `Alt+Shift+L`). Revoked on Disable / Clear all. |
+| `optional_host_permissions` `http://localhost:5000/*` | Optional Flask server for **Scan this video**. Not granted at install. The POST works today because `server.py` sends `CORS(app)` headers. |
+| `activeTab` | **Kept.** Without a host grant and without the broader `tabs` permission, Chrome hides `tab.url`. The popup's Enable button (`popup.js` `tabs.query` → `tab.url`) and the `Alt+Shift+L` command (`background.js`) need that URL to know which origin to request. Opening the popup or using the command grants `activeTab` for that tab, which exposes the URL. `cdp_smoke.py` checks that `tab.url` really is hidden before any grant. Swapping this for `tabs` would be broader. |
+| `scripting` | `registerContentScripts` / `executeScript` for enabled origins only (inject-only, no static `content_scripts`). |
+| `offscreen` | Transformers.js inference runs in an offscreen document. |
+| `contextMenus`, `storage` | Context-menu fallback scans, settings. |
+
+No required `host_permissions`. Hugging Face model downloads work without them: `huggingface.co` echoes the extension origin in `access-control-allow-origin`, and the `*.hf.co` CDN sends `*`. A fresh-profile download with all seven HF patterns removed produced real `local score N` badges. `health_check.py` now fails if `host_permissions` comes back.
 
 ## Optional Flask server (power user)
 
-`chrome_plugin/background.js` may still `POST http://localhost:5000/detect` for **video** context-menu scans when the server is running.
+`chrome_plugin/background.js` may still `POST http://localhost:5000/detect` for **video** context-menu scans when the server is running. `localhost:5000` is an optional host permission, so nothing is granted at install. The request relies on the server's CORS headers.
 
 - `server.py` — Flask on port 5000
 - `text_detection.py` — Desklib AI text detector (heavy; desktop)
