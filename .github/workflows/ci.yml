@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: npm test (syntax checks + health_check + node unit tests)
+        run: npm test
+      - name: health_check (manifest / policy, explicit)
+        run: python3 chrome_plugin/scripts/health_check.py
