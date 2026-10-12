@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Byte-compile Python files
+        run: python -m compileall -q -x '/\.git/' .
+      - name: Syntax-check extension JavaScript
+        run: find chrome_plugin -name '*.js' -print0 | xargs -0 -n1 node --check
