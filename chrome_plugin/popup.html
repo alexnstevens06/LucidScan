@@ -1,25 +1,67 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>AI Detection Result</title>
-    <link rel="stylesheet" type="text/css" href="popup.css">
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+  <meta charset="utf-8" />
+  <title>LucidScan</title>
+  <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
-    <div id="result-container">
-        <div class="header">
-            <h1>AI Detection Result</h1>
-            <p>Content Type: <span id="content-type">Waiting...</span></p>
-        </div>
-        <div class="score-container">
-            <div class="score-circle">
-                <span id="confidence-score">...</span>
-            </div>
-        </div>
-        <div class="footer">
-            <p id="confidence-label">Confidence Score</p>
-        </div>
-    </div>
-    <script src="popup.js"></script>
+  <main class="wrap">
+    <header>
+      <h1>LucidScan</h1>
+      <p class="tag">Browse-time <strong>local signal</strong> badges — not an authenticity verdict.</p>
+    </header>
+
+    <section class="card site-card">
+      <h2>This page</h2>
+      <p id="site-origin" class="origin" title="">Open an http(s) tab</p>
+      <p id="site-state" class="state-pill" data-state="unknown">…</p>
+      <button type="button" id="enable-site" class="btn primary">Enable badges on this site</button>
+      <button type="button" id="pause-site" class="btn secondary">Pause badges on this site</button>
+      <button type="button" id="resume-site" class="btn secondary">Resume badges on this site</button>
+      <button type="button" id="disable-site" class="btn danger">Disable badges on this site</button>
+      <p class="hint-block">Shortcut: <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> enables this site. Pause hides badges without revoking permission; Disable removes the site enable.</p>
+      <p id="status" class="muted" role="status">…</p>
+    </section>
+
+    <section class="card">
+      <h2>Enabled sites</h2>
+      <ul id="site-list" class="site-list" aria-label="Enabled origins"></ul>
+      <button type="button" id="clear-all" class="btn secondary">Clear all enabled sites</button>
+    </section>
+
+    <section class="card">
+      <h2>Models</h2>
+      <button type="button" id="warmup" class="btn secondary">Load local models</button>
+      <button type="button" id="retry-models" class="btn secondary">Retry model load</button>
+      <p id="model-status" class="muted" data-state="unknown">Models: …</p>
+      <div id="progress-wrap" class="progress-wrap" hidden>
+        <div id="progress-bar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+      </div>
+      <p id="progress-text" class="muted progress-text" hidden></p>
+      <button type="button" id="cancel-load" class="btn secondary" hidden>Cancel load watch</button>
+    </section>
+
+    <section class="card" id="last-scan-card">
+      <h2>Last scan</h2>
+      <div class="score-circle" aria-hidden="true"></div>
+      <p><span id="score-label">local score</span>: <strong id="confidence-score">—</strong></p>
+      <p class="muted">Type: <span id="content-type">—</span></p>
+    </section>
+
+    <section class="card about" id="licenses">
+      <h2>About / licenses (local-dev)</h2>
+      <ul>
+        <li>Badges inject <strong>only after</strong> Enable on this site (optional host permission).</li>
+        <li><strong>Transformers.js</strong> — Apache-2.0; ORT WASM under <code>lib/</code> (extension-page only; not web-accessible).</li>
+        <li><strong>TMR text ONNX</strong> — MIT.</li>
+        <li><strong>CLIP ViT-B/32</strong> — CLIP code MIT; model-card deployed use out of scope. Local/dev signal tooling only.</li>
+        <li>First run downloads HF weights into browser cache — not vendored in git.</li>
+        <li>Same-origin iframes may be scanned; cross-origin frames need their own enable.</li>
+        <li><code>file://</code> is not supported — serve <code>test/sample.html</code> over http(s).</li>
+      </ul>
+    </section>
+  </main>
+  <script src="popup.js"></script>
 </body>
 </html>

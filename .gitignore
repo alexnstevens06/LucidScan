@@ -203,3 +203,8 @@ cython_debug/
 *.heic
 *.heif
 *.hevc
+
+# LucidScan Chrome MV3 exceptions (repo uses broad *.json / lib/ ignores)
+!chrome_plugin/manifest.json
+!chrome_plugin/lib/
+!chrome_plugin/lib/**
