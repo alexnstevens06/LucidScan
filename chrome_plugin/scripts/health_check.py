@@ -65,6 +65,10 @@ def main() -> int:
             for need in ("scripting", "activeTab", "storage"):
                 if need not in perms:
                     errors.append(f"permissions missing: {need}")
+            # No install-time host access: HF model download works via CORS, the optional
+            # Flask server (localhost:5000) is optional_host_permissions, sites are granted per click.
+            if m.get("host_permissions"):
+                errors.append("host_permissions should be absent (use optional_host_permissions)")
             if not m.get("optional_host_permissions"):
                 errors.append("optional_host_permissions missing for per-site enable")
             war = m.get("web_accessible_resources")

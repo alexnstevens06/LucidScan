@@ -12,17 +12,8 @@
   ],
   "optional_host_permissions": [
     "http://*/*",
-    "https://*/*"
-  ],
-  "host_permissions": [
-    "http://localhost:5000/*",
-    "https://huggingface.co/*",
-    "https://*.huggingface.co/*",
-    "https://cdn-lfs.huggingface.co/*",
-    "https://cdn-lfs-us-east-1.huggingface.co/*",
-    "https://hf.co/*",
-    "https://*.hf.co/*",
-    "https://cdn-lfs-eu-1.huggingface.co/*"
+    "https://*/*",
+    "http://localhost:5000/*"
   ],
   "background": {
     "service_worker": "background.js"
