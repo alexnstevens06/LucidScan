@@ -358,6 +358,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Ignore offscreen-targeted messages here (offscreen.js handles them).
   if (msg.type.startsWith("offscreen.")) return;
 
+  // Offscreen documents have no chrome.storage. Relay the startup flags.
+  if (msg.type === "getOffscreenSettings") {
+    const url = sender && sender.url ? String(sender.url) : "";
+    if (url && !url.endsWith("offscreen.html")) return;
+    try {
+      chrome.storage.local.get(
+        { autoWarmup: true, inferenceMode: "transformers", forceMock: false },
+        (r) => {
+          const row = r || {};
+          sendResponse({
+            autoWarmup: row.autoWarmup !== false,
+            inferenceMode: row.inferenceMode || "transformers",
+            forceMock: row.forceMock === true,
+          });
+        }
+      );
+    } catch (_) {
+      sendResponse({ autoWarmup: true, inferenceMode: "transformers", forceMock: false });
+      return;
+    }
+    return true;
+  }
+
   if (msg.type === "scoreText" || msg.type === "scoreImage") {
     (async () => {
       try {

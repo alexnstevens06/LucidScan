@@ -172,12 +172,8 @@ function configureEnv() {
 
 configureEnv();
 
-function storageSet(obj) {
-  try {
-    if (chrome.storage && chrome.storage.local && chrome.storage.local.set) {
-      chrome.storage.local.set(obj);
-    }
-  } catch (_) {}
+function storageSet(_obj) {
+  // No-op. This document has no storage API; status goes out on score/status replies.
 }
 
 
@@ -229,30 +225,11 @@ function mockImageScore(key) {
 }
 
 async function loadSettings(overrides = null) {
-  return new Promise((resolve) => {
-    const apply = (r) => {
-      preferMock = r.forceMock === true || r.inferenceMode === "mock";
-      resolve();
-    };
-    if (overrides && (overrides.inferenceMode != null || overrides.forceMock != null)) {
-      apply({
-        inferenceMode: overrides.inferenceMode ?? "transformers",
-        forceMock: overrides.forceMock === true,
-      });
-      return;
-    }
-    try {
-      if (!chrome.storage || !chrome.storage.local) {
-        preferMock = false;
-        resolve();
-        return;
-      }
-      chrome.storage.local.get({ inferenceMode: "transformers", forceMock: false }, (r) => apply(r || {}));
-    } catch (_) {
-      preferMock = false;
-      resolve();
-    }
-  });
+  // Flags are relayed by the service worker (this document has no storage API).
+  // No overrides: keep the current mode (default transformers / preferMock false).
+  if (overrides && (overrides.inferenceMode != null || overrides.forceMock != null)) {
+    preferMock = overrides.forceMock === true || (overrides.inferenceMode ?? "transformers") === "mock";
+  }
 }
 
 async function canUseWebGPU() {
@@ -589,11 +566,23 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return true;
 });
 
-// Eager settings + optional auto-warmup of text model (smaller than CLIP)
-loadSettings().then(() => {
-  chrome.storage.local.get({ autoWarmup: true }, (r) => {
-    if (r.autoWarmup !== false && !preferMock) {
-      warmup("text").catch((e) => console.warn("[LucidScan] auto warmup text failed", e));
-    }
-  });
-});
+// Eager settings + optional auto-warmup of text model (smaller than CLIP).
+// Ask the service worker; retry because it may still be starting.
+(async () => {
+  const fallback = { autoWarmup: true, inferenceMode: "transformers", forceMock: false };
+  let result = fallback;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const reply = await chrome.runtime.sendMessage({ type: "getOffscreenSettings" });
+      if (reply && typeof reply === "object") {
+        result = reply;
+        break;
+      }
+    } catch (_) {}
+    if (attempt < 4) await new Promise((r) => setTimeout(r, 300));
+  }
+  await loadSettings(result);
+  if (result.autoWarmup !== false && !preferMock) {
+    warmup("text").catch((e) => console.warn("[LucidScan] auto warmup text failed", e));
+  }
+})();
