@@ -13,6 +13,12 @@ import { pipeline, env } from "./lib/transformers.min.js";
 
 const TEXT_MODEL = "onnx-community/tmr-ai-text-detector-ONNX";
 const IMAGE_MODEL = "Xenova/clip-vit-base-patch32";
+// Pinned Hugging Face commits (git SHA of each model repo). Bump deliberately: a new SHA means a
+// new first-run download (the browser cache is keyed by URL, which includes the revision).
+const MODEL_REVISIONS = {
+  [TEXT_MODEL]: "b9aa251e5bcda7e429fcc936767d921435945b60",
+  [IMAGE_MODEL]: "d15189d7028b43f1d3e65039190477f6af591c2a",
+};
 const IMAGE_LABELS = [
   "a photograph of a real-world scene",
   "a synthetic computer-generated or AI-generated image",
@@ -288,6 +294,7 @@ async function createPipe(task, model, dtype, which = "model") {
       };
       const pipe = await pipeline(task, model, {
         ...pipelineOpts,
+        revision: MODEL_REVISIONS[model],
         progress_callback: makeProgressHandler(which),
       });
       loadProgress = {
