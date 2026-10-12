@@ -262,6 +262,7 @@ def main():
         f"--user-data-dir={args.profile}", "--no-first-run", "--no-default-browser-check", "--test-type",
         "--password-store=basic", "--disable-session-crashed-bubble", "--hide-crash-restore-bubble",
         "--disable-search-engine-choice-screen", "--lang=en-US", "--ozone-platform=x11",
+        "--enable-logging=stderr", "--v=0",  # extension-page console lines land in chrome-stderr.log
         f"--window-size={W},{H}", "--window-position=0,0", "--force-device-scale-factor=1", "about:blank"],
         env=env, stdout=subprocess.DEVNULL, stderr=open(raw / "chrome-stderr.log", "w"),
         start_new_session=True)
@@ -288,6 +289,22 @@ def main():
         assert sw, "service worker target not found"
         swsid = cdp.call("Target.attachToTarget", {"targetId": sw[0]["targetId"], "flatten": True})["sessionId"]
         log("SW attached:", sw[0]["url"])
+
+        # --- auto-warmup probe: BEFORE any explicit warmup, the offscreen doc should start loading
+        # the text model on its own (settings relayed by the SW; offscreen has no chrome.storage).
+        cdp.ev("ensureOffscreen().then(() => 'ok')", swsid, await_promise=True)
+        auto = {"text": None, "seen_s": None}
+        t_auto = time.time()
+        while time.time() - t_auto < 30:
+            st0 = cdp.ev("chrome.runtime.sendMessage({type:'offscreen.getProgress'})", swsid, await_promise=True) or {}
+            auto["text"] = st0.get("text")
+            if st0.get("text") in ("loading", "ready"):
+                auto["seen_s"] = round(time.time() - t_auto, 1)
+                break
+            time.sleep(1)
+        auto["ok"] = auto["seen_s"] is not None
+        summary["auto_warmup_text"] = auto
+        log("auto-warmup (before explicit warmup):", auto)
 
         # --- models: same message the popup's "Load local models" sends ---
         cdp.ev("""(async () => { await ensureOffscreen();
@@ -379,6 +396,13 @@ def main():
             summary["video"] = {"mp4": str(mp4), "bytes": mp4.stat().st_size, "chip": vchip}
             log("video", mp4, mp4.stat().st_size // 1024, "KB")
     finally:
+        try:
+            errlog = (raw / "chrome-stderr.log").read_text(errors="replace")
+            bad = [l for l in errlog.splitlines()
+                   if "offscreen" in l and ("chrome.storage" in l or "reading 'local'" in l)]
+            summary["offscreen_storage_errors"] = bad[:10]
+        except Exception as e:
+            summary["offscreen_storage_errors"] = [f"could not read stderr log: {e}"]
         (raw / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
         for p in reversed(procs):
             try:
