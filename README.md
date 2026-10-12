@@ -1,4 +1,7 @@
 # LucidScan
+![LucidScan demo](docs/lucidscan-demo.gif)
+
+*Demo recorded from the `feat/browse-badges-loadable` branch (PR #1), whose extension code is not on `main` yet. Setup, tech, and CI notes for `main` are in [docs/setup.md](docs/setup.md).*
 
 Local content-detection extension from TIDALHack 25. The Chrome-side script sends selected text, or an image or video URL, to a Flask server in this repo. The server scores text with one model and images or video with another.
 
