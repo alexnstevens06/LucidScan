@@ -208,3 +208,6 @@ cython_debug/
 !chrome_plugin/manifest.json
 !chrome_plugin/lib/
 !chrome_plugin/lib/**
+
+# npm manifest needed by CI
+!package.json
