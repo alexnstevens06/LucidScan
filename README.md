@@ -1,4 +1,7 @@
 # LucidScan
+![LucidScan demo](docs/lucidscan-demo.gif)
+
+*Demo recorded from the `feat/browse-badges-loadable` branch (PR #1), whose extension code is not on `main` yet. Setup, tech, and CI notes for `main` are in [docs/setup.md](docs/setup.md).*
 
 Local browse-time **signal** badges for Chrome (MV3, load unpacked, v0.4.0), plus an optional Flask desktop path from TIDALHack 25.
 
