@@ -72,7 +72,16 @@ async function setEnabledOrigins(origins) {
   return cleaned;
 }
 
-async function syncRegisteredContentScripts() {
+// Serialize (un)register: permissions.onAdded and activateBadgesForOrigin can race, and two
+// overlapping registerContentScripts calls with the same id fail ("Duplicate script ID").
+let syncChain = Promise.resolve();
+function syncRegisteredContentScripts() {
+  const run = syncChain.then(doSyncRegisteredContentScripts, doSyncRegisteredContentScripts);
+  syncChain = run.catch(() => {});
+  return run;
+}
+
+async function doSyncRegisteredContentScripts() {
   const origins = await getEnabledOrigins();
   try {
     await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] });
@@ -94,6 +103,8 @@ async function syncRegisteredContentScripts() {
 }
 
 async function injectIntoTab(tabId) {
+  // content.js is idempotent (globalThis guard in the isolated world), so a tab that already has a
+  // live instance from the registered script is not injected twice.
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: false },
     files: ["content.js"],
@@ -313,6 +324,9 @@ function getInferenceFlags() {
 
 async function scoreViaOffscreen(kind, payload) {
   await ensureOffscreen();
+  if (!(await waitForOffscreenReady(2000))) {
+    return { id: payload.id, state: "loading", label: "loading" };
+  }
   const id = payload.id || `sw-${Date.now()}`;
   const flags = await getInferenceFlags();
   // payload is the content-script message (type: "scoreImage"/"scoreText"); spread it first so it
@@ -352,16 +366,44 @@ chrome.runtime.onInstalled.addListener((details) => {
   syncRegisteredContentScripts().catch((e) => console.warn("register scripts", e));
 });
 
+const EXTENSION_ORIGIN = chrome.runtime.getURL("");
+
+/** Message came from one of our extension pages (popup, offscreen, popup window), not a web page. */
+function isExtensionPage(sender) {
+  return !!(sender && sender.id === chrome.runtime.id && typeof sender.url === "string" &&
+    sender.url.startsWith(EXTENSION_ORIGIN));
+}
+
+function isOffscreenDoc(sender) {
+  return isExtensionPage(sender) && !sender.tab &&
+    sender.url.startsWith(chrome.runtime.getURL(OFFSCREEN_URL));
+}
+
+/** Our own content script running in a web tab. */
+function isOwnContentScript(sender) {
+  return !!(sender && sender.id === chrome.runtime.id && sender.tab && !isExtensionPage(sender));
+}
+
+const CONTENT_MESSAGES = new Set(["scoreText", "scoreImage"]);
+const PRIVILEGED_MESSAGES = new Set([
+  "getInferenceStatus", "cancelModelLoad", "warmupModels", "pauseBadgesForSite", "resumeBadgesForSite",
+  "enableBadgesForSite", "disableBadgesForSite", "disableBadgeOrigin", "clearAllBadgeOrigins",
+  "getSiteBadgeStatus",
+]);
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type) return;
+  if (!sender || sender.id !== chrome.runtime.id) return;
+  if (CONTENT_MESSAGES.has(msg.type) && !(isOwnContentScript(sender) || isExtensionPage(sender))) return;
+  // Site enable/disable, model control: popup / extension pages only, never a tab's content script.
+  if (PRIVILEGED_MESSAGES.has(msg.type) && (!isExtensionPage(sender) || isOffscreenDoc(sender))) return;
 
   // Ignore offscreen-targeted messages here (offscreen.js handles them).
   if (msg.type.startsWith("offscreen.")) return;
 
   // Offscreen documents have no chrome.storage. Relay the startup flags.
   if (msg.type === "getOffscreenSettings") {
-    const url = sender && sender.url ? String(sender.url) : "";
-    if (url && !url.endsWith("offscreen.html")) return;
+    if (!isOffscreenDoc(sender)) return;
     try {
       chrome.storage.local.get(
         { autoWarmup: true, inferenceMode: "transformers", forceMock: false },
@@ -386,13 +428,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const kind = msg.type === "scoreText" ? "text" : "image";
         const result = await scoreViaOffscreen(kind, msg);
-        sendResponse(result || { id: msg.id, label: "pending", state: "pending" });
+        // No reply = offscreen still starting: retryable loading, never a fake score.
+        sendResponse(result || { id: msg.id, label: "loading", state: "loading" });
       } catch (err) {
         sendResponse({
           id: msg.id,
-          label: "offline",
-          state: "pending",
-          error: String(err && err.message ? err.message : err),
+          label: "unavailable",
+          state: "unavailable",
+          reason: `scoring unavailable: ${String(err && err.message ? err.message : err)}`,
         });
       }
     })();
@@ -584,12 +627,12 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
         text: type === "text" ? content : undefined,
         src: type === "image" ? content : undefined,
       });
-      if (scored && typeof scored.score === "number") {
+      if (scored && scored.state === "signal" && typeof scored.score === "number") {
         display = {
           confidence: scored.score,
           label: scored.label || "local score",
           contentType: type,
-          mode: scored.mode || "mock",
+          mode: scored.mode || "transformers",
         };
       }
     } else {

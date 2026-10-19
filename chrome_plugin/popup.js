@@ -8,10 +8,10 @@ function paintLastScan(scan) {
     typeEl.textContent = "—";
     return;
   }
-  labelEl.textContent = scan.heuristics ? "local heuristics" : scan.label || "local score";
+  labelEl.textContent = scan.label || "local score";
   typeEl.textContent = scan.contentType || "—";
   if (scan.confidence == null || Number.isNaN(Number(scan.confidence))) {
-    scoreEl.textContent = scan.label === "offline" ? "offline" : "—";
+    scoreEl.textContent = scan.label === "offline" || scan.label === "unavailable" ? "unavailable" : "—";
     circle.style.background = "conic-gradient(#2a3b55 100%, #2a3b55 100%)";
     return;
   }
@@ -94,7 +94,7 @@ function formatModelStatus(resp) {
     return "Models: loading (first run may download from Hugging Face)…";
   }
   if (t === "error" || i === "error" || mode === "mock") {
-    return "Models unavailable — showing local heuristics only (not authenticity).";
+    return "Models unavailable — badges show \"unavailable\" (no score) until they load.";
   }
   return `Models: ${mode} — text ${t}${td}, image ${i}${id}`;
 }
@@ -332,9 +332,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const bad = !resp || resp.ok === false || textBad || imageBad || resp.cancelled;
       document.getElementById("model-status").dataset.state = bad ? "error" : "ok";
       status.textContent = resp && resp.cancelled
-        ? "Load cancelled — local heuristics may be used until models load."
+        ? "Load cancelled — the next badge request (or Load local models) starts it again."
         : bad
-          ? "Models unavailable — local heuristics only (retry anytime)."
+          ? "Models unavailable — badges show \"unavailable\" (retry anytime)."
           : "Model load finished.";
       if (!bad) {
         document.getElementById("progress-wrap").hidden = true;

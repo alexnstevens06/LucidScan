@@ -162,6 +162,31 @@ let preferMock = false;
 let deviceUsed = { text: null, image: null };
 let loadProgress = { which: null, status: "idle", percent: null, file: null, message: null };
 let loadCancelled = false;
+let textErrorAt = 0;
+let imageErrorAt = 0;
+
+// Cancel only affects a load that is in flight, and the flag clears once that load settles,
+// so a cancel can never leave later requests stuck.
+function settleCancel() {
+  if (textStatus !== "loading" && imageStatus !== "loading") loadCancelled = false;
+}
+
+function requestCancel() {
+  if (textStatus === "loading" || imageStatus === "loading") loadCancelled = true;
+  return loadCancelled;
+}
+
+/** Start a background load if needed; returns true when the pipe is ready now. */
+function kickLoad(which) {
+  const ready = which === "text" ? !!textPipe : !!imagePipe;
+  if (ready) return true;
+  const status = which === "text" ? textStatus : imageStatus;
+  const errAt = which === "text" ? textErrorAt : imageErrorAt;
+  if (status === "loading") return false;
+  if (status === "error" && Date.now() - errAt < RELOAD_AFTER_ERROR_MS) return false;
+  (which === "text" ? ensureTextPipe() : ensureImagePipe()).catch(() => {});
+  return false;
+}
 
 function configureEnv() {
   env.allowLocalModels = false;
@@ -199,35 +224,47 @@ function hashStr(s) {
   return (h >>> 0).toString(16);
 }
 
-// FALLBACK ONLY: used when models fail to load or forceMock is set. Labeled as local heuristics in the UI.
-function mockTextScore(text) {
-  const t = (text || "").trim();
-  if (!t) return { score: 0.5, label: "local score", state: "signal", mode: "mock" };
-  let entropy = 0;
-  const freq = {};
-  for (const ch of t.toLowerCase()) freq[ch] = (freq[ch] || 0) + 1;
-  const n = t.length;
-  for (const c of Object.values(freq)) {
-    const p = c / n;
-    entropy -= p * Math.log2(p);
-  }
-  const words = t.split(/\s+/).filter(Boolean);
-  const avgLen = words.reduce((a, w) => a + w.length, 0) / Math.max(words.length, 1);
-  let score = 0.35 + Math.min(entropy / 6, 0.4) + Math.min(avgLen / 20, 0.2);
-  score = Math.max(0.05, Math.min(0.95, score));
-  return { score, label: "local score", state: "signal", mode: "mock" };
+// No stand-in scores: when a model is not ready or the input cannot be read, the answer is
+// "loading" (retryable) or "unavailable" (with a reason) — never a made-up number.
+function unavailable(reason) {
+  return { state: "unavailable", label: "unavailable", reason: String(reason || "models unavailable") };
 }
 
-function mockImageScore(key) {
-  if (imageCache.has(key)) {
-    const hit = imageCache.get(key);
-    if (hit && isFresh(hit.ts)) return { ...hit.result, cached: true };
+function loadingReply(which) {
+  const p = loadProgress && loadProgress.which === which ? loadProgress.percent : null;
+  return { state: "loading", label: "loading", mode: "transformers", progress: typeof p === "number" ? p : null };
+}
+
+const RELOAD_AFTER_ERROR_MS = 60 * 1000;
+
+/**
+ * Resolve the pixels for an image request. dataUrl comes from the content script when the page
+ * canvas was readable. Otherwise (tainted canvas: cross-origin image without CORS) fetch src from
+ * the extension origin; that only succeeds when the server sends CORS headers or the user granted
+ * host permission for the image's origin. Failure => unavailable, not a fallback number.
+ */
+async function resolveImageInput(src, dataUrl) {
+  if (dataUrl) return { input: dataUrl };
+  if (!src) return { error: "no image input" };
+  let u;
+  try {
+    u = new URL(src);
+  } catch (_) {
+    return { error: "image URL not readable" };
   }
-  const n = parseInt(hashStr(key).slice(0, 6), 16) || 0;
-  const score = 0.2 + (n % 600) / 1000;
-  const result = { score, label: "local score", state: "signal", mode: "mock", heuristics: true };
-  memoryCacheSet(key, result);
-  return result;
+  if (u.protocol !== "http:" && u.protocol !== "https:" && u.protocol !== "data:") {
+    return { error: "image URL scheme not supported" };
+  }
+  try {
+    const resp = await fetch(u.href, { credentials: "omit", cache: "force-cache" });
+    if (!resp.ok) return { error: `image fetch failed (HTTP ${resp.status})` };
+    const blob = await resp.blob();
+    if (!blob.size || (blob.type && !blob.type.startsWith("image/"))) return { error: "response is not an image" };
+    const url = URL.createObjectURL(blob);
+    return { input: url, revoke: () => URL.revokeObjectURL(url) };
+  } catch (_) {
+    return { error: "cross-origin image not readable (no CORS / host permission)" };
+  }
 }
 
 async function loadSettings(overrides = null) {
@@ -338,10 +375,18 @@ async function ensureTextPipe() {
     });
     return textPipe;
   } catch (err) {
-    textStatus = "error";
-    textError = String(err?.message || err);
-    storageSet({ textModelStatus: "error", textModelError: textError });
+    if (loadCancelled) {
+      textStatus = "idle"; // cancelled, not broken: the next request may start a fresh load
+      textError = null;
+    } else {
+      textStatus = "error";
+      textError = String(err?.message || err);
+      textErrorAt = Date.now();
+    }
+    storageSet({ textModelStatus: textStatus, textModelError: textError });
     throw err;
+  } finally {
+    settleCancel();
   }
 }
 
@@ -375,10 +420,18 @@ async function ensureImagePipe() {
     });
     return imagePipe;
   } catch (err) {
-    imageStatus = "error";
-    imageError = String(err?.message || err);
-    storageSet({ imageModelStatus: "error", imageModelError: imageError });
+    if (loadCancelled) {
+      imageStatus = "idle";
+      imageError = null;
+    } else {
+      imageStatus = "error";
+      imageError = String(err?.message || err);
+      imageErrorAt = Date.now();
+    }
+    storageSet({ imageModelStatus: imageStatus, imageModelError: imageError });
     throw err;
+  } finally {
+    settleCancel();
   }
 }
 
@@ -415,19 +468,15 @@ function clamp01(n) {
 async function scoreText(text, overrides = null) {
   await loadSettings(overrides);
   const sample = String(text || "").slice(0, 4000);
-  if (preferMock) return mockTextScore(sample);
-  if (textStatus === "loading" && !textPipe) {
-    ensureTextPipe().catch(() => {});
-    return { label: "loading", state: "pending", mode: "transformers" };
+  if (preferMock) return unavailable("models disabled in settings (mock mode)");
+  if (!kickLoad("text")) {
+    if (textStatus === "error") return unavailable(`text model failed to load: ${textError}`);
+    return loadingReply("text");
   }
   try {
-    // Fire-and-forget if idle so first call can also show loading via race with content timeout
-    const pipePromise = ensureTextPipe();
-    const pipe = await pipePromise;
-    const out = await pipe(sample);
-    const score = textOutputToScore(out);
+    const out = await textPipe(sample);
     return {
-      score,
+      score: textOutputToScore(out),
       label: "local score",
       state: "signal",
       mode: "transformers",
@@ -435,46 +484,44 @@ async function scoreText(text, overrides = null) {
       model: TEXT_MODEL,
     };
   } catch (err) {
-    console.warn("[LucidScan] text pipeline failed, mock fallback:", err);
-    const fallback = mockTextScore(sample);
-    return { ...fallback, heuristics: true, fallbackReason: String(err?.message || err) };
+    console.warn("[LucidScan] text inference failed:", err?.message || err);
+    return unavailable(`text inference failed: ${String(err?.message || err)}`);
   }
 }
 
 async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
   await loadSettings(overrides);
+  if (preferMock) return unavailable("models disabled in settings (mock mode)");
   const key = cacheKey || hashStr(dataUrl || src || "");
   const cached = await cacheGet(key);
-  if (cached) return cached;
-  if (preferMock) {
-    const result = mockImageScore(key);
-    await cacheSet(key, result);
-    return result;
+  if (cached && cached.state === "signal" && typeof cached.score === "number" && cached.mode !== "mock") {
+    return cached;
   }
-  if (imageStatus === "loading" && !imagePipe) {
-    ensureImagePipe().catch(() => {});
-    return { label: "loading", state: "pending", mode: "transformers" };
+  // Never await the first-run CLIP download here: answer "loading" (with progress) right away
+  // and let the content script retry with backoff.
+  if (!kickLoad("image")) {
+    if (imageStatus === "error") return unavailable(`image model failed to load: ${imageError}`);
+    return loadingReply("image");
   }
+  const resolved = await resolveImageInput(src, dataUrl);
+  if (resolved.error) return unavailable(resolved.error);
   try {
-    const pipe = await ensureImagePipe();
-    const input = dataUrl || src;
-    if (!input) throw new Error("no image input");
-    const out = await pipe(input, IMAGE_LABELS);
-    const score = imageOutputToScore(out);
+    const out = await imagePipe(resolved.input, IMAGE_LABELS);
     const result = {
-      score,
+      score: imageOutputToScore(out),
       label: "local score",
       state: "signal",
       mode: "transformers",
       device: deviceUsed.image,
       model: IMAGE_MODEL,
     };
-    await cacheSet(key, result);
+    await cacheSet(key, result); // only real model scores are cached
     return result;
   } catch (err) {
-    console.warn("[LucidScan] image pipeline failed, mock fallback:", err);
-    const fallback = mockImageScore(key);
-    return { ...fallback, heuristics: true, fallbackReason: String(err?.message || err) };
+    console.warn("[LucidScan] image inference failed:", err?.message || err);
+    return unavailable(`image not readable by model: ${String(err?.message || err)}`);
+  } finally {
+    if (resolved.revoke) resolved.revoke();
   }
 }
 
@@ -518,8 +565,19 @@ function statusPayload() {
 }
 
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+// Only the extension's own pages/service worker may drive the offscreen document. Content
+// scripts' runtime.sendMessage also reaches this listener, so reject anything from a tab
+// context or a non-extension URL.
+const EXTENSION_ORIGIN = chrome.runtime.getURL("");
+function isTrustedSender(sender) {
+  if (!sender || sender.id !== chrome.runtime.id) return false;
+  if (sender.tab) return false;
+  return typeof sender.url === "string" && sender.url.startsWith(EXTENSION_ORIGIN);
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type || !String(msg.type).startsWith("offscreen.")) return;
+  if (!isTrustedSender(sender)) return;
 
   (async () => {
     try {
@@ -552,8 +610,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return;
       }
       if (msg.type === "offscreen.cancelLoad") {
-        loadCancelled = true;
-        loadProgress = { which: loadProgress.which, status: "cancelled", percent: null, file: null, message: "load cancelled" };
+        if (requestCancel()) {
+          loadProgress = { which: loadProgress.which, status: "cancelled", percent: null, file: null, message: "load cancelled" };
+        }
         sendResponse({ ok: true, ...statusPayload() });
         return;
       }

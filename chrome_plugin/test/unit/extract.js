@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const ROOT = path.resolve(__dirname, "..", "..");
 
 function extractFunction(src, name) {
-  const re = new RegExp(`function\\s+${name}\\s*\\(`);
+  const re = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`);
   const m = re.exec(src);
   if (!m) throw new Error(`function ${name} not found`);
   let i = src.indexOf("{", m.index);
