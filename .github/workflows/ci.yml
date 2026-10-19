@@ -1,8 +1,14 @@
 name: CI
 
 on:
+  # push only on main; PR commits are covered by pull_request (avoids every PR commit running twice)
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

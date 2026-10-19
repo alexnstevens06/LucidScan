@@ -1,7 +1,36 @@
 (() => {
   "use strict";
-  if (globalThis.__lucidScanContentLoaded) return;
+  // Idempotent injection: one live instance per page (isolated world). Enable may run
+  // executeScript while a registered content script already injected us; the second copy exits.
+  // A hard teardown (Disable / Pause) destroys the instance and clears this guard, so a later
+  // Enable injects a fresh one instead of stacking on a zombie.
+  const prior = globalThis.__lucidScanInstance;
+  if (prior && prior.alive) return;
+  const instance = { alive: true, destroy: null, stats: null };
+  globalThis.__lucidScanInstance = instance;
   globalThis.__lucidScanContentLoaded = true;
+
+  // Every listener/timer this instance adds is tracked so destroy() can remove all of them.
+  const listeners = [];
+  function on(target, type, fn, opts) {
+    if (!target || typeof target.addEventListener !== "function") return;
+    target.addEventListener(type, fn, opts);
+    listeners.push({ target, type, fn, opts });
+  }
+  const chromeListeners = [];
+  function onChrome(event, fn) {
+    event.addListener(fn);
+    chromeListeners.push({ event, fn });
+  }
+  const timers = new Set();
+  function addTimer(fn, ms) {
+    const t = setTimeout(() => {
+      timers.delete(t);
+      fn();
+    }, ms);
+    timers.add(t);
+    return t;
+  }
 
   const MIN_IMG = 48;
   const MAX_CONCURRENT = 2;
@@ -26,6 +55,7 @@
     const pattern = currentOriginPattern();
     try {
       chrome.storage.local.get({ pausedOrigins: [] }, (r) => {
+        if (!instance.alive) return;
         const paused = Array.isArray(r.pausedOrigins) ? r.pausedOrigins : [];
         sitePaused = !!(pattern && paused.includes(pattern));
         badgesActive = !sitePaused;
@@ -139,6 +169,7 @@
 
   function loadSettings() {
     refreshPauseState(() => {
+      if (!instance.alive) return;
       if (!badgesActive) teardownAll(false);
       else {
         ensureObservers();
@@ -147,16 +178,26 @@
     });
   }
 
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes.pausedOrigins) return;
+  function onStorageChanged(changes, area) {
+    if (!instance.alive || area !== "local") return;
+    if (changes.enabledOrigins) {
+      const pattern = currentOriginPattern();
+      const list = Array.isArray(changes.enabledOrigins.newValue) ? changes.enabledOrigins.newValue : [];
+      if (!pattern || !list.includes(pattern)) {
+        destroy(); // site disabled elsewhere (popup list, permission removal)
+        return;
+      }
+    }
+    if (!changes.pausedOrigins) return;
     refreshPauseState(() => {
+      if (!instance.alive) return;
       if (!badgesActive) teardownAll(false);
       else {
         ensureObservers();
         scanImages();
       }
     });
-  });
+  }
 
   function mountShadowHost(position) {
     const host = document.createElement("div");
@@ -190,6 +231,7 @@
       .pill[data-state="pending"],
       .pill[data-state="loading"] { opacity: 0.85; border-color: rgba(160,180,210,0.4); }
       .pill[data-state="signal"] { border-color: rgba(120, 220, 180, 0.7); }
+      .pill[data-state="unavailable"],
       .pill[data-state="offline"] { border-color: rgba(230, 170, 100, 0.75); color: #ffe8cc; }
     `;
     const pill = document.createElement("div");
@@ -211,42 +253,69 @@
     if (!host.isConnected) parent.appendChild(host);
   }
 
+  /**
+   * Render a result. Only a real model score shows a number. Anything else (models failed,
+   * image unreadable, prefilter skip, mock mode) shows "unavailable" with the reason in the
+   * tooltip; while the model is downloading it shows progress.
+   */
   function paintPill(pill, result) {
     if (!pill || !result) return;
-    const mode = result.mode || "";
-    const fallback = result.fallbackReason || result.label === "offline";
-    let state = result.state || "signal";
-    let text = result.label || "local score";
-    if (result.label === "loading" || state === "pending") {
-      state = result.label === "loading" ? "loading" : "pending";
-      text = result.label === "loading" ? "…" : (result.label || "…");
-    } else if (fallback || result.heuristics || mode === "mock") {
-      state = "offline";
-      text =
-        typeof result.score === "number"
-          ? `local heuristics ${Math.round(result.score * 100)}`
-          : "local heuristics (models unavailable)";
-    } else if (typeof result.score === "number") {
-      text = `local score ${Math.round(result.score * 100)}`;
+    const r = result;
+    let state;
+    let text;
+    let title = TITLE_SIGNAL;
+    if (isRetryable(r)) {
+      state = "loading";
+      const p = typeof r.progress === "number" ? Math.max(0, Math.min(100, Math.round(r.progress))) : null;
+      text = p != null && p < 100 ? `downloading model ${p}%` : "loading model…";
+      title = `${TITLE_SIGNAL} — model loading (first run downloads it once)`;
+    } else if (
+      r.state === "signal" &&
+      typeof r.score === "number" &&
+      r.mode !== "mock" &&
+      !r.heuristics &&
+      !r.fallbackReason
+    ) {
       state = "signal";
-    } else if (result.label === "offline") {
-      state = "offline";
-      text = "models unavailable";
+      text = `local score ${Math.round(r.score * 100)}`;
+    } else {
+      state = "unavailable";
+      text = "unavailable";
+      title = `${TITLE_SIGNAL} — ${r.reason || r.fallbackReason || r.error || "models unavailable"}`;
     }
     pill.dataset.state = state;
     pill.textContent = text;
-    pill.title = TITLE_SIGNAL;
+    pill.title = title;
+  }
+
+  // Retry schedule while the model is still downloading/loading (first run fetches ~300 MB CLIP).
+  const RETRY_DELAYS_MS = [2000, 4000, 8000, 15000, 30000];
+  const RETRY_BUDGET_MS = 10 * 60 * 1000;
+  const REQUEST_TIMEOUT_MS = 12000;
+
+  function isRetryable(result) {
+    if (!result) return true;
+    return result.state === "loading" || result.state === "pending" || result.label === "loading";
   }
 
   function requestScore(kind, payload) {
     const id = `ls-${++seq}`;
-    return new Promise((resolve) => {
+    return new Promise((done) => {
+      let timer = null;
+      const resolve = (v) => {
+        if (timer) {
+          clearTimeout(timer);
+          timers.delete(timer);
+          timer = null;
+        }
+        done(v);
+      };
       pending.set(id, resolve);
       try {
         chrome.runtime.sendMessage({ type: kind, id, ...payload }, (resp) => {
           if (chrome.runtime.lastError) {
             pending.delete(id);
-            resolve({ label: "offline", state: "offline", mode: "mock" });
+            resolve({ state: "unavailable", reason: "extension unreachable" });
             return;
           }
           if (resp) {
@@ -256,30 +325,33 @@
         });
       } catch (_) {
         pending.delete(id);
-        resolve({ label: "offline", state: "offline", mode: "mock" });
+        resolve({ state: "unavailable", reason: "extension unreachable" });
       }
-      setTimeout(() => {
+      // No reply yet (offscreen busy): treat as still loading so the caller retries with backoff.
+      timer = addTimer(() => {
+        timer = null;
         if (pending.has(id)) {
           pending.delete(id);
-          resolve({ label: "pending", state: "pending" });
+          resolve({ state: "loading", reason: "no reply yet" });
         }
-      }, 12000);
+      }, REQUEST_TIMEOUT_MS);
     });
   }
 
-  chrome.runtime.onMessage.addListener((msg) => {
+  function onRuntimeMessage(msg, sender) {
     if (!msg) return;
+    if (sender && sender.id && sender.id !== chrome.runtime.id) return;
     if (msg.type === "teardownBadges") {
-      teardownAll(true);
-      globalThis.__lucidScanContentLoaded = false;
+      destroy();
       return;
     }
+    if (msg.type === "lucidscan.ping") return; // presence handled by globalThis guard
     if (msg.id && pending.has(msg.id)) {
       const resolve = pending.get(msg.id);
       pending.delete(msg.id);
       resolve(msg);
     }
-  });
+  }
 
   function pumpQueue() {
     while (inFlight < MAX_CONCURRENT && (highQueue.length || lowQueue.length)) {
@@ -298,36 +370,46 @@
   function enqueueImage(img) {
     if (!badgesActive || !img || scoredImgs.has(img) || isSkippableImg(img)) return;
     scoredImgs.set(img, true);
-    const gen = jobGeneration;
+    scheduleImageAttempt(img, 0, Date.now(), jobGeneration);
+  }
+
+  function scheduleImageAttempt(img, attempt, startedAt, gen) {
     lowQueue.push(async () => {
-      if (gen !== jobGeneration || !badgesActive) return;
-      if (!badgesActive || !img.isConnected) return;
+      if (!instance.alive || gen !== jobGeneration || !badgesActive || !img.isConnected) return;
       let entry = imgHosts.get(img);
       if (!entry) {
         entry = mountShadowHost("absolute");
         imgHosts.set(img, entry);
         placeImageBadge(img, entry.host);
+        entry.pill.dataset.state = "loading";
+        entry.pill.textContent = "…";
       }
-      entry.pill.dataset.state = "pending";
-      entry.pill.textContent = "pending";
-      entry.pill.title = TITLE_SIGNAL;
       const src = img.currentSrc || img.src;
+      // null when the canvas is tainted (cross-origin without CORS); offscreen then fetches src
+      // itself and answers with a real score or "unavailable".
       const dataUrl = imageToDataUrl(img);
       const pre = cheapImagePrefilter(img, dataUrl);
       if (pre.skip) {
-        paintPill(entry.pill, {
-          score: 0.5,
-          label: "local heuristics",
-          state: "offline",
-          mode: "mock",
-          heuristics: true,
-          prefilter: pre.reason,
-        });
+        paintPill(entry.pill, { state: "unavailable", reason: `not scored (${pre.reason})` });
         return;
       }
       const cacheKey = hashStr(src || dataUrl || "");
       const result = await requestScore("scoreImage", { src, dataUrl, cacheKey });
-      if (!imgHosts.has(img)) return;
+      if (!instance.alive || gen !== jobGeneration || !imgHosts.has(img)) return;
+      if (isRetryable(result)) {
+        if (Date.now() - startedAt > RETRY_BUDGET_MS) {
+          paintPill(entry.pill, { state: "unavailable", reason: "model did not finish loading" });
+          return;
+        }
+        paintPill(entry.pill, result);
+        const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
+        addTimer(() => {
+          if (!instance.alive || gen !== jobGeneration) return;
+          scheduleImageAttempt(img, attempt + 1, startedAt, gen);
+          pumpQueue();
+        }, delay);
+        return;
+      }
       paintPill(entry.pill, result);
     });
     pumpQueue();
@@ -346,8 +428,7 @@
     if (!img || scoredImgs.has(img)) return;
     const hasSrc = !!(img.src || img.currentSrc);
     if (hasSrc && !img.complete) {
-      img.addEventListener("load", () => observeImg(img), { once: true });
-      img.addEventListener("error", () => {}, { once: true });
+      on(img, "load", () => { if (instance.alive && badgesActive) observeImg(img); }, { once: true });
       return;
     }
     if (isSkippableImg(img)) return;
@@ -445,7 +526,7 @@
     textChip.style.display = "block";
     textChip.style.top = `${Math.max(4, box.top - 28)}px`;
     textChip.style.left = `${Math.max(4, box.left)}px`;
-    textChipLabel.dataset.state = "pending";
+    textChipLabel.dataset.state = "loading";
     textChipLabel.textContent = "…";
     textChipLabel.title = TITLE_SIGNAL;
     repositionChip();
@@ -457,16 +538,34 @@
           resolve({ label: "pending", state: "pending" });
           return;
         }
-        resolve(await requestScore("scoreText", { text: text.slice(0, 4000) }));
+        let r = await requestScore("scoreText", { text: text.slice(0, 4000) });
+        const t0 = Date.now();
+        let attempt = 0;
+        // Model still loading: keep the chip in a loading state and retry with backoff while
+        // the same text stays selected.
+        while (isRetryable(r) && instance.alive && gen === jobGeneration &&
+               String(window.getSelection() || "").trim() === text) {
+          if (Date.now() - t0 > RETRY_BUDGET_MS) {
+            r = { state: "unavailable", reason: "model did not finish loading" };
+            break;
+          }
+          if (textChipLabel) paintPill(textChipLabel, r);
+          const d = RETRY_DELAYS_MS[Math.min(attempt++, RETRY_DELAYS_MS.length - 1)];
+          await new Promise((res) => addTimer(res, d));
+          if (!instance.alive || gen !== jobGeneration) break;
+          r = await requestScore("scoreText", { text: text.slice(0, 4000) });
+        }
+        resolve(r);
       });
       pumpQueue();
     });
-    if (gen !== jobGeneration) return;
+    if (!instance.alive || gen !== jobGeneration || !textChipLabel) return;
     if (!window.getSelection() || String(window.getSelection()).trim() !== text) return;
     paintPill(textChipLabel, result);
   }
 
   function debouncedSelection() {
+    if (!instance.alive) return;
     clearTimeout(selectionTimer);
     selectionTimer = setTimeout(onSelectionChange, SELECTION_DEBOUNCE_MS);
   }
@@ -502,12 +601,51 @@
       textChip.remove();
       textChip = textChipLabel = null;
     }
+    for (const t of timers) clearTimeout(t);
+    timers.clear();
+    for (const resolve of pending.values()) resolve({ state: "unavailable", reason: "torn down" });
+    pending.clear();
+    clearTimeout(selectionTimer);
+    pendingNodes = [];
     if (hard) {
       try { io.disconnect(); } catch (_) {}
       try { mo.disconnect(); } catch (_) {}
       try { stripObserver.disconnect(); } catch (_) {}
     }
   }
+
+  /** Hard teardown: stop everything this instance did and allow a clean re-injection. */
+  function destroy() {
+    if (!instance.alive) return;
+    instance.alive = false;
+    badgesActive = false;
+    sitePaused = true;
+    teardownAll(true);
+    for (const { target, type, fn, opts } of listeners.splice(0)) {
+      try { target.removeEventListener(type, fn, opts); } catch (_) {}
+    }
+    for (const { event, fn } of chromeListeners.splice(0)) {
+      try { event.removeListener(fn); } catch (_) {}
+    }
+    if (history.pushState === wrappedPush) history.pushState = origPush;
+    if (history.replaceState === wrappedReplace) history.replaceState = origReplace;
+    if (globalThis.__lucidScanInstance === instance) {
+      globalThis.__lucidScanInstance = null;
+      globalThis.__lucidScanContentLoaded = false;
+    }
+  }
+  instance.destroy = destroy;
+  instance.stats = () => ({
+    alive: instance.alive,
+    badgesActive,
+    listeners: listeners.length,
+    chromeListeners: chromeListeners.length,
+    timers: timers.size,
+    badges: imgHosts.size,
+    badgeTexts: [...imgHosts.values()].map((e) => e.pill.textContent),
+    badgesBySrc: [...imgHosts.entries()].map(([img, e]) => [img.currentSrc || img.src, e.pill.textContent]),
+    historyPatched: history.pushState === wrappedPush,
+  });
 
 
   // Re-attach badges if a page strips our host nodes (anti-extension). Back off; don't fight forever.
@@ -526,8 +664,8 @@
     if (!stripped) return;
     stripStrikes++;
     const delay = Math.min(6000, 300 * 2 ** Math.min(stripStrikes, 5));
-    setTimeout(() => {
-      if (!badgesActive) return;
+    addTimer(() => {
+      if (!instance.alive || !badgesActive) return;
       // Clear weak scored markers for visible imgs missing hosts, then rescan
       for (const img of document.querySelectorAll("img")) {
         if (!imgHosts.has(img) && !isSkippableImg(img)) {
@@ -539,6 +677,7 @@
   });
 
   function ensureObservers() {
+    if (!instance.alive) return;
     try {
       mo.observe(document.documentElement, { childList: true, subtree: true });
     } catch (_) {}
@@ -549,37 +688,41 @@
 
 
   function rebindAfterSoftNav() {
-    if (!badgesActive) return;
+    if (!instance.alive || !badgesActive) return;
     ensureObservers();
     scanImages();
   }
 
-  // History API / SPA soft navigation without extra permissions
-  const _push = history.pushState.bind(history);
-  const _replace = history.replaceState.bind(history);
-  history.pushState = function (...args) {
-    const r = _push(...args);
+  // History API / SPA soft navigation without extra permissions. Originals are restored on destroy.
+  const origPush = history.pushState;
+  const origReplace = history.replaceState;
+  const wrappedPush = function (...args) {
+    const r = origPush.apply(this, args);
     queueMicrotask(rebindAfterSoftNav);
     return r;
   };
-  history.replaceState = function (...args) {
-    const r = _replace(...args);
+  const wrappedReplace = function (...args) {
+    const r = origReplace.apply(this, args);
     queueMicrotask(rebindAfterSoftNav);
     return r;
   };
-  window.addEventListener("popstate", rebindAfterSoftNav);
-  window.addEventListener("hashchange", rebindAfterSoftNav);
+  history.pushState = wrappedPush;
+  history.replaceState = wrappedReplace;
+  on(window, "popstate", rebindAfterSoftNav);
+  on(window, "hashchange", rebindAfterSoftNav);
 
-  document.addEventListener("selectionchange", debouncedSelection);
-  window.addEventListener("scroll", repositionChip, true);
-  window.addEventListener("resize", repositionChip);
+  on(document, "selectionchange", debouncedSelection);
+  on(window, "scroll", repositionChip, true);
+  on(window, "resize", repositionChip);
   if (window.visualViewport) {
-    window.visualViewport.addEventListener("resize", repositionChip);
-    window.visualViewport.addEventListener("scroll", repositionChip);
+    on(window.visualViewport, "resize", repositionChip);
+    on(window.visualViewport, "scroll", repositionChip);
   }
-  document.addEventListener("keydown", (e) => {
+  on(document, "keydown", (e) => {
     if (e.key === "Escape") hideTextChip();
   });
+  onChrome(chrome.runtime.onMessage, onRuntimeMessage);
+  onChrome(chrome.storage.onChanged, onStorageChanged);
 
   ensureObservers();
   loadSettings();
