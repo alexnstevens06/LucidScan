@@ -1,8 +1,19 @@
+/** @param {string} id @returns {HTMLElement} */
+function el(id) {
+  return /** @type {HTMLElement} */ (document.getElementById(id));
+}
+
+/** @param {string} id @returns {HTMLButtonElement} */
+function button(id) {
+  return /** @type {HTMLButtonElement} */ (document.getElementById(id));
+}
+
+/** @param {LastScan | null | undefined} scan */
 function paintLastScan(scan) {
-  const scoreEl = document.getElementById("confidence-score");
-  const typeEl = document.getElementById("content-type");
-  const labelEl = document.getElementById("score-label");
-  const circle = document.querySelector(".score-circle");
+  const scoreEl = el("confidence-score");
+  const typeEl = el("content-type");
+  const labelEl = el("score-label");
+  const circle = /** @type {HTMLElement} */ (document.querySelector(".score-circle"));
   if (!scan) {
     scoreEl.textContent = "—";
     typeEl.textContent = "—";
@@ -21,13 +32,15 @@ function paintLastScan(scan) {
 }
 
 
+/** @type {ReturnType<typeof setInterval> | null} */
 let progressTimer = null;
 
+/** @param {ModelStatus | null | undefined} resp */
 function setProgressUI(resp) {
-  const wrap = document.getElementById("progress-wrap");
-  const bar = document.getElementById("progress-bar");
-  const text = document.getElementById("progress-text");
-  const cancel = document.getElementById("cancel-load");
+  const wrap = el("progress-wrap");
+  const bar = el("progress-bar");
+  const text = el("progress-text");
+  const cancel = el("cancel-load");
   const prog = resp && resp.progress;
   const loading =
     (resp && (resp.text === "loading" || resp.image === "loading")) ||
@@ -64,7 +77,7 @@ function startProgressPoll() {
   progressTimer = setInterval(() => {
     chrome.runtime.sendMessage({ type: "getInferenceStatus" }, (resp) => {
       if (chrome.runtime.lastError) return;
-      document.getElementById("model-status").textContent = formatModelStatus(resp);
+      el("model-status").textContent = formatModelStatus(resp);
       setProgressUI(resp);
       const done =
         resp &&
@@ -83,6 +96,7 @@ function startProgressPoll() {
   }, 400);
 }
 
+/** @param {ModelStatus | null | undefined} resp */
 function formatModelStatus(resp) {
   if (!resp) return "Models: starting…";
   const mode = resp.mode || "transformers";
@@ -99,6 +113,7 @@ function formatModelStatus(resp) {
   return `Models: ${mode} — text ${t}${td}, image ${i}${id}`;
 }
 
+/** @param {string} urlString @returns {string | null} */
 function originPatternFromUrl(urlString) {
   try {
     const u = new URL(urlString);
@@ -109,8 +124,9 @@ function originPatternFromUrl(urlString) {
   }
 }
 
+/** @param {string[] | null | undefined} origins @param {string[] | null | undefined} pausedOrigins */
 function renderSiteList(origins, pausedOrigins) {
-  const ul = document.getElementById("site-list");
+  const ul = el("site-list");
   ul.innerHTML = "";
   const paused = new Set(pausedOrigins || []);
   if (!origins || !origins.length) {
@@ -137,12 +153,12 @@ function renderSiteList(origins, pausedOrigins) {
 }
 
 function refreshSiteStatus() {
-  const originEl = document.getElementById("site-origin");
-  const stateEl = document.getElementById("site-state");
-  const enableBtn = document.getElementById("enable-site");
-  const disableBtn = document.getElementById("disable-site");
-  const pauseBtn = document.getElementById("pause-site");
-  const resumeBtn = document.getElementById("resume-site");
+  const originEl = el("site-origin");
+  const stateEl = el("site-state");
+  const enableBtn = button("enable-site");
+  const disableBtn = button("disable-site");
+  const pauseBtn = button("pause-site");
+  const resumeBtn = button("resume-site");
 
   chrome.runtime.sendMessage({ type: "getSiteBadgeStatus" }, (resp) => {
     if (chrome.runtime.lastError) {
@@ -203,7 +219,7 @@ function refreshSiteStatus() {
 }
 
 function refreshModels() {
-  const modelStatus = document.getElementById("model-status");
+  const modelStatus = el("model-status");
   chrome.runtime.sendMessage({ type: "getInferenceStatus" }, (resp) => {
     if (chrome.runtime.lastError) {
       modelStatus.textContent = "Models: starting…";
@@ -223,16 +239,18 @@ function refreshAll() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  const status = document.getElementById("status");
-  const enableBtn = document.getElementById("enable-site");
-  const disableBtn = document.getElementById("disable-site");
-  const pauseBtn = document.getElementById("pause-site");
-  const resumeBtn = document.getElementById("resume-site");
-  const clearAll = document.getElementById("clear-all");
-  const warmupBtn = document.getElementById("warmup");
-  const retryBtn = document.getElementById("retry-models");
+  const status = el("status");
+  const enableBtn = button("enable-site");
+  const disableBtn = button("disable-site");
+  const pauseBtn = button("pause-site");
+  const resumeBtn = button("resume-site");
+  const clearAll = button("clear-all");
+  const warmupBtn = button("warmup");
+  const retryBtn = button("retry-models");
 
-  chrome.storage.local.get({ lastScan: null }, (r) => paintLastScan(r.lastScan));
+  chrome.storage.local.get({ lastScan: null }, (r) => {
+    paintLastScan(/** @type {LastScan | null} */ (r.lastScan));
+  });
 
   enableBtn.addEventListener("click", () => {
     status.textContent = "Requesting site permission…";
@@ -249,7 +267,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       chrome.permissions.request({ origins: [origin] }, (granted) => {
         if (chrome.runtime.lastError) {
-          status.textContent = chrome.runtime.lastError.message;
+          status.textContent = /** @type {string} */ (chrome.runtime.lastError.message);
           return;
         }
         if (!granted) {
@@ -260,7 +278,7 @@ document.addEventListener("DOMContentLoaded", () => {
           { type: "enableBadgesForSite", origin, tabId: tab.id, permissionGranted: true },
           (resp) => {
             if (chrome.runtime.lastError) {
-              status.textContent = chrome.runtime.lastError.message;
+              status.textContent = /** @type {string} */ (chrome.runtime.lastError.message);
               return;
             }
             status.textContent =
@@ -312,34 +330,34 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function runWarmup() {
     status.textContent = "Loading models (HF download on first run)…";
-    document.getElementById("model-status").dataset.state = "loading";
-    document.getElementById("model-status").textContent =
+    el("model-status").dataset.state = "loading";
+    el("model-status").textContent =
       "Models: loading (first run may download from Hugging Face)…";
     setProgressUI({ text: "loading", image: "loading", progress: { status: "starting", percent: 0, message: "starting…" } });
     startProgressPoll();
     chrome.runtime.sendMessage({ type: "warmupModels", which: "both" }, (resp) => {
       stopProgressPoll();
       if (chrome.runtime.lastError) {
-        status.textContent = chrome.runtime.lastError.message;
-        document.getElementById("model-status").dataset.state = "error";
+        status.textContent = /** @type {string} */ (chrome.runtime.lastError.message);
+        el("model-status").dataset.state = "error";
         setProgressUI(null);
         return;
       }
-      document.getElementById("model-status").textContent = formatModelStatus(resp);
+      el("model-status").textContent = formatModelStatus(resp);
       setProgressUI(resp);
       const textBad = resp && (resp.text === "error" || (resp.text && resp.text.status === "error"));
       const imageBad = resp && (resp.image === "error" || (resp.image && resp.image.status === "error"));
       const bad = !resp || resp.ok === false || textBad || imageBad || resp.cancelled;
-      document.getElementById("model-status").dataset.state = bad ? "error" : "ok";
+      el("model-status").dataset.state = bad ? "error" : "ok";
       status.textContent = resp && resp.cancelled
         ? "Load cancelled — the next badge request (or Load local models) starts it again."
         : bad
           ? "Models unavailable — badges show \"unavailable\" (retry anytime)."
           : "Model load finished.";
       if (!bad) {
-        document.getElementById("progress-wrap").hidden = true;
-        document.getElementById("progress-text").hidden = true;
-        document.getElementById("cancel-load").hidden = true;
+        el("progress-wrap").hidden = true;
+        el("progress-text").hidden = true;
+        el("cancel-load").hidden = true;
       }
     });
   }
@@ -352,7 +370,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes.lastScan) paintLastScan(changes.lastScan.newValue);
+    if (changes.lastScan) paintLastScan(/** @type {LastScan | null | undefined} */ (changes.lastScan.newValue));
     if (changes.enabledOrigins || changes.pausedOrigins) refreshSiteStatus();
   });
 });

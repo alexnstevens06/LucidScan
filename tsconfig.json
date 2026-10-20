@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    // Catch bindings stay `any`. Every catch already stringifies `err.message` or `err`
+    // for non-Error throws; `useUnknownInCatchVariables` would force rewrites with no behavior change.
+    "useUnknownInCatchVariables": false,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "skipLibCheck": true,
+    "types": ["chrome"],
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "types/extension-jsdoc.d.ts",
+    "chrome_plugin/background.js",
+    "chrome_plugin/content.js",
+    "chrome_plugin/offscreen.js",
+    "chrome_plugin/popup.js"
+  ],
+  "exclude": [
+    "chrome_plugin/lib/**/*.js",
+    "chrome_plugin/lib/**/*.mjs"
+  ]
+}

@@ -3,11 +3,38 @@
  * Badge inference lives in offscreen.js; content scripts are a thin bridge.
  */
 
+/**
+ * @typedef {{
+ *   ok?: boolean,
+ *   error?: string,
+ *   granted?: boolean,
+ *   origin?: string | null,
+ *   injected?: boolean,
+ *   matches?: string[],
+ *   cleared?: string[],
+ * }} BadgeOpResult
+ */
+
+/**
+ * @typedef {{
+ *   confidence: number | null,
+ *   label: string,
+ *   contentType: string,
+ *   mode?: string,
+ * }} ScanDisplay
+ */
+
+/**
+ * @typedef {{ id?: string } & Record<string, unknown>} ScorePayload
+ */
+
 const OFFSCREEN_URL = "offscreen.html";
+/** @type {Promise<void> | null} */
 let creatingOffscreen = null;
 
 const CONTENT_SCRIPT_ID = "lucidscan-badges";
 
+/** @param {string} urlString @returns {string | null} */
 function originPatternFromUrl(urlString) {
   try {
     const u = new URL(urlString);
@@ -18,6 +45,7 @@ function originPatternFromUrl(urlString) {
   }
 }
 
+/** @param {unknown} urlString */
 function isRestrictedUrl(urlString) {
   if (!urlString || typeof urlString !== "string") return true;
   const lower = urlString.toLowerCase();
@@ -36,12 +64,14 @@ function isRestrictedUrl(urlString) {
   return false;
 }
 
+/** @param {string} msg @param {{ host?: string }} [extra] */
 function logInfo(msg, extra) {
   // No URLs/PII in logs — origin host only when provided
   if (extra && extra.host) console.info("[LucidScan]", msg, { host: extra.host });
   else console.info("[LucidScan]", msg);
 }
 
+/** @returns {Promise<string[]>} */
 async function getPausedOrigins() {
   return new Promise((resolve) => {
     chrome.storage.local.get({ pausedOrigins: [] }, (r) => {
@@ -51,12 +81,14 @@ async function getPausedOrigins() {
   });
 }
 
+/** @param {string[]} origins @returns {Promise<string[]>} */
 async function setPausedOrigins(origins) {
   const cleaned = [...new Set(origins)].filter(Boolean).sort();
   await chrome.storage.local.set({ pausedOrigins: cleaned });
   return cleaned;
 }
 
+/** @returns {Promise<string[]>} */
 function getEnabledOrigins() {
   return new Promise((resolve) => {
     chrome.storage.local.get({ enabledOrigins: [] }, (r) => {
@@ -66,6 +98,7 @@ function getEnabledOrigins() {
   });
 }
 
+/** @param {string[]} origins @returns {Promise<string[]>} */
 async function setEnabledOrigins(origins) {
   const cleaned = [...new Set(origins)].filter(Boolean).sort();
   await chrome.storage.local.set({ enabledOrigins: cleaned });
@@ -74,10 +107,11 @@ async function setEnabledOrigins(origins) {
 
 // Serialize (un)register: permissions.onAdded and activateBadgesForOrigin can race, and two
 // overlapping registerContentScripts calls with the same id fail ("Duplicate script ID").
+/** @type {Promise<void>} */
 let syncChain = Promise.resolve();
 function syncRegisteredContentScripts() {
   const run = syncChain.then(doSyncRegisteredContentScripts, doSyncRegisteredContentScripts);
-  syncChain = run.catch(() => {});
+  syncChain = /** @type {Promise<void>} */ (run.catch(() => {}));
   return run;
 }
 
@@ -102,6 +136,7 @@ async function doSyncRegisteredContentScripts() {
   return { registered: true, matches: origins };
 }
 
+/** @param {number} tabId */
 async function injectIntoTab(tabId) {
   // content.js is idempotent (globalThis guard in the isolated world), so a tab that already has a
   // live instance from the registered script is not injected twice.
@@ -111,6 +146,7 @@ async function injectIntoTab(tabId) {
   });
 }
 
+/** @param {number} tabId */
 async function teardownInTab(tabId) {
   try {
     await chrome.tabs.sendMessage(tabId, { type: "teardownBadges" });
@@ -119,6 +155,7 @@ async function teardownInTab(tabId) {
   }
 }
 
+/** @param {string | null} pattern @param {number | null | undefined} tabId @returns {Promise<BadgeOpResult>} */
 async function activateBadgesForOrigin(pattern, tabId) {
   if (!pattern) return { ok: false, error: "Missing origin pattern." };
   if (pattern.startsWith("file:") || pattern.startsWith("chrome:") || pattern.startsWith("chrome-error:")) {
@@ -165,6 +202,7 @@ async function activateBadgesForOrigin(pattern, tabId) {
 }
 
 /** @deprecated gesture-unsafe if awaits precede request — prefer popup request + activateBadgesForOrigin */
+/** @param {chrome.tabs.Tab | undefined} tab @returns {Promise<BadgeOpResult>} */
 async function enableBadgesForTab(tab) {
   if (!tab || !tab.id || !tab.url) {
     return { ok: false, error: "No active http(s) tab." };
@@ -184,6 +222,7 @@ async function enableBadgesForTab(tab) {
   return activateBadgesForOrigin(pattern, tab.id);
 }
 
+/** @param {chrome.tabs.Tab | undefined} tab @returns {Promise<BadgeOpResult>} */
 async function disableBadgesForTab(tab) {
   if (!tab || !tab.url) {
     return { ok: false, error: "No active http(s) tab." };
@@ -203,6 +242,7 @@ async function disableBadgesForTab(tab) {
   return { ok: true, origin: pattern, matches: reg.matches };
 }
 
+/** @param {string | null | undefined} pattern @returns {Promise<BadgeOpResult>} */
 async function disableOriginPattern(pattern) {
   if (!pattern) return { ok: false, error: "Missing origin." };
   const origins = (await getEnabledOrigins()).filter((o) => o !== pattern);
@@ -239,6 +279,7 @@ async function clearAllEnabledOrigins() {
   return { ok: true, cleared: prev };
 }
 
+/** @param {chrome.tabs.Tab | undefined} tab */
 async function getSiteBadgeStatus(tab) {
   const origins = await getEnabledOrigins();
   const paused = await getPausedOrigins();
@@ -322,6 +363,7 @@ function getInferenceFlags() {
   });
 }
 
+/** @param {string} kind @param {ScorePayload} payload */
 async function scoreViaOffscreen(kind, payload) {
   await ensureOffscreen();
   if (!(await waitForOffscreenReady(2000))) {
@@ -369,17 +411,23 @@ chrome.runtime.onInstalled.addListener((details) => {
 const EXTENSION_ORIGIN = chrome.runtime.getURL("");
 
 /** Message came from one of our extension pages (popup, offscreen, popup window), not a web page. */
+/**
+ * @param {chrome.runtime.MessageSender | null | undefined} sender
+ * @returns {sender is chrome.runtime.MessageSender & { url: string }}
+ */
 function isExtensionPage(sender) {
   return !!(sender && sender.id === chrome.runtime.id && typeof sender.url === "string" &&
     sender.url.startsWith(EXTENSION_ORIGIN));
 }
 
+/** @param {chrome.runtime.MessageSender | null | undefined} sender */
 function isOffscreenDoc(sender) {
   return isExtensionPage(sender) && !sender.tab &&
     sender.url.startsWith(chrome.runtime.getURL(OFFSCREEN_URL));
 }
 
 /** Our own content script running in a web tab. */
+/** @param {chrome.runtime.MessageSender | null | undefined} sender */
 function isOwnContentScript(sender) {
   return !!(sender && sender.id === chrome.runtime.id && sender.tab && !isExtensionPage(sender));
 }
@@ -618,6 +666,7 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
     return;
   }
 
+  /** @type {ScanDisplay} */
   let display = { confidence: null, label: "pending", contentType: type };
 
   try {
@@ -685,10 +734,11 @@ chrome.permissions.onAdded.addListener((perm) => {
   }
 });
 chrome.permissions.onRemoved.addListener(async (perm) => {
-  if (!perm || !perm.origins) return;
+  const removedOrigins = perm && perm.origins;
+  if (!removedOrigins) return;
   try {
     const origins = await getEnabledOrigins();
-    const next = origins.filter((o) => !perm.origins.includes(o));
+    const next = origins.filter((o) => !removedOrigins.includes(o));
     if (next.length !== origins.length) {
       await setEnabledOrigins(next);
       await syncRegisteredContentScripts();

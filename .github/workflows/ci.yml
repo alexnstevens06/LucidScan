@@ -46,6 +46,22 @@ jobs:
       - name: health_check (manifest / policy, explicit)
         run: python3 chrome_plugin/scripts/health_check.py
 
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - name: Install npm dependencies
+        run: npm ci
+      - name: ESLint (extension source)
+        run: npm run lint
+      - name: Typecheck (checkJs + JSDoc)
+        run: npm run typecheck
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15
