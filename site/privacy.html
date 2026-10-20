@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LucidScan privacy policy</title>
+  <meta name="description" content="What LucidScan stores on your device, what it downloads from Hugging Face, and the Chrome Web Store Limited Use statement.">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <div class="sheet">
+    <header class="mast">
+      <a class="brand" href="index.html">
+        <img src="icon.svg" width="36" height="36" alt="">
+        LucidScan
+      </a>
+      <p class="draft">Draft. Not in the Chrome Web Store.</p>
+      <nav aria-label="On this site">
+        <a href="index.html#how">How it works</a>
+        <a href="support.html">Support</a>
+        <a href="privacy.html">Privacy</a>
+      </nav>
+    </header>
+
+    <main id="content">
+      <section class="block narrow">
+        <p class="kicker">Privacy policy</p>
+        <h1>What stays on your device</h1>
+        <p>Effective 20 October 2026. This policy describes LucidScan version 0.4.0 in the source repository. The page is a local draft and is not deployed. The markdown copy is <code>store/privacy-policy.md</code> in that repository.</p>
+        <p>LucidScan is maintained by Alex Stevens. Questions go to <a href="https://github.com/alexnstevens06/LucidScan/issues">GitHub issues</a>. There is no LucidScan account and no LucidScan server.</p>
+        <p>LucidScan scores images and text you select on your own device, and only on websites you turn on. The maintainer does not receive that content. The badge is a local signal. It may suggest whether content may be AI-generated. It is a signal, not a verdict.</p>
+      </section>
+
+      <section class="block narrow">
+        <h2>What the extension processes</h2>
+        <p>Processing starts only after you enable a site (Enable badges on this site, or Alt+Shift+L) and allow that site.</p>
+        <p><strong>Selected text.</strong> When you select at least 12 characters on an enabled site, up to 4,000 characters are sent to the extension's own offscreen document and scored on the device. That text is not written into the score cache and is not sent to the maintainer.</p>
+        <p><strong>Images.</strong> Visible images on an enabled site are drawn to an in-memory canvas and downscaled so the longest side is at most 512 pixels, then scored on the device. The score cache does not store pixels.</p>
+        <p><strong>Cross-origin images.</strong> If the canvas is tainted because the image is cross-origin and the page did not grant a usable read, the offscreen document may request that image's URL again from the site that hosts it. That host can see a request from your IP address. The request omits credentials. If the request fails, the badge shows "unavailable".</p>
+        <p><strong>Settings you choose.</strong> The extension remembers which sites you enabled or paused.</p>
+        <p><strong>Right-click.</strong> A right-click on selected text or an image asks for the same on-device score. The result stored afterward is the score label, not the text or the image.</p>
+      </section>
+
+      <section class="block">
+        <h2>What is stored on your device</h2>
+        <h3>Enabled-site list and other settings</h3>
+        <p class="narrow">Stored in <code>chrome.storage.local</code> on the device. <code>storage.sync</code> is not used.</p>
+        <table>
+          <thead>
+            <tr><th>Key</th><th>What it holds</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>enabledOrigins</code></td><td>Sites you turned on, as origin patterns.</td></tr>
+            <tr><td><code>pausedOrigins</code></td><td>Sites where you paused badges.</td></tr>
+            <tr><td><code>lastScan</code></td><td>The latest right-click result: a score if one was produced, a label, the content type (text, image, or video), and the mode. It does not hold the selected text, the image, or the video address.</td></tr>
+            <tr><td><code>inferenceMode</code>, <code>forceMock</code>, <code>autoWarmup</code></td><td>Local switches for on-device scoring.</td></tr>
+            <tr><td><code>_migratedInferenceMode</code></td><td>A one-time flag so an older local setting is not applied twice.</td></tr>
+          </tbody>
+        </table>
+        <p class="narrow">Disable and Clear all enabled sites update the enabled-site list and drop the host permission for those sites. They do not delete the score cache or <code>lastScan</code>. Pause updates <code>pausedOrigins</code>.</p>
+
+        <h3>24-hour local score cache</h3>
+        <p class="narrow">IndexedDB database <code>lucidscan-cache</code>, object store <code>imageScores</code>.</p>
+        <ul class="plain narrow">
+          <li>At most 200 entries. Older entries are dropped when the cap is passed.</li>
+          <li>Each entry expires 24 hours after it was written.</li>
+          <li>The key is a non-cryptographic 32-bit FNV-1a hash of the image address (or of the canvas data if there is no address). The plain URL is not stored.</li>
+          <li>The value is the score, label, state, mode, and a timestamp.</li>
+          <li>No pixels and no page text.</li>
+        </ul>
+        <p class="narrow">A memory cache holds the same kind of rows until the offscreen document closes.</p>
+        <p class="narrow">There is no button that deletes this database. Rows expire after 24 hours. Removing LucidScan removes the extension's local storage, this database, and the browser cache of downloaded model files.</p>
+      </section>
+
+      <section class="block narrow">
+        <h2>What is transmitted</h2>
+        <p><strong>Model download from Hugging Face.</strong> The first time a model is needed, and whenever the browser cache misses, the extension downloads model files from huggingface.co and Hugging Face's CDN. Hugging Face can see your IP address, user agent, and which files were requested. Their policy is at <a href="https://huggingface.co/privacy">huggingface.co/privacy</a>. The files are data (weights, tokenizer, and config). JavaScript and WebAssembly ship inside the extension package.</p>
+        <p>Pinned revisions in this version:</p>
+        <ul class="plain">
+          <li>Text: <code>onnx-community/tmr-ai-text-detector-ONNX</code> at <code>b9aa251e5bcda7e429fcc936767d921435945b60</code> (q8), about 129 MB with its tokenizer and config.</li>
+          <li>Images: <code>Xenova/clip-vit-base-patch32</code> at <code>d15189d7028b43f1d3e65039190477f6af591c2a</code> (fp16), about 306 MB with its tokenizer and config.</li>
+          <li>Together, about 435 MB on a first run. If fp16 fails, a smaller quantized image file may be fetched as well.</li>
+        </ul>
+        <p><strong>Badge path.</strong> On the path that paints badges, page text and image pixels are not sent to the maintainer. There is no analytics, no telemetry, and no LucidScan server on that path.</p>
+        <p><strong>Image re-fetch.</strong> Only the cross-origin fallback described above, and only to the host that already served the image.</p>
+        <p><strong>Optional localhost server.</strong> Only if you use the right-click item "Scan this video (optional server)". The extension then POSTs the video address to <code>http://localhost:5000/detect</code> on your computer. If you are running that program, it receives the address and may download the video itself. That exchange stays on your machine and the video's host. The maintainer does not receive it. The host permission is optional and is not granted at install. If you never use the item, the extension does not make that request. This item is proposed for removal before a public submission.</p>
+      </section>
+
+      <section class="block narrow">
+        <h2>What we do not do</h2>
+        <p>We do not sell data, show ads, or use data to determine creditworthiness. We do not review your pages, because we do not receive them. We do not run a payment or account system in this version.</p>
+      </section>
+
+      <section class="block narrow" id="limited-use">
+        <h2>Chrome Web Store Limited Use</h2>
+        <p>The use of information received from Google APIs will adhere to the Chrome Web Store User Data Policy, including the Limited Use requirements.</p>
+      </section>
+
+      <section class="block">
+        <h2>Permissions, in short</h2>
+        <table>
+          <thead>
+            <tr><th>Manifest entry</th><th>Role</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>storage</code></td><td>The on-device settings and last right-click result above.</td></tr>
+            <tr><td><code>contextMenus</code></td><td>Right-click local signal for text or an image, plus the optional video item.</td></tr>
+            <tr><td><code>scripting</code></td><td>Injects the badge script only on sites you enabled.</td></tr>
+            <tr><td><code>activeTab</code></td><td>Reads the current tab's URL when you open the popup or use Alt+Shift+L, so it can ask for that one site.</td></tr>
+            <tr><td><code>offscreen</code></td><td>Runs on-device scoring outside the service worker.</td></tr>
+            <tr><td><code>http://*/*</code> and <code>https://*/*</code> (optional)</td><td>Granted one site at a time when you enable it. Removed when you disable it.</td></tr>
+            <tr><td><code>http://localhost:5000/*</code> (optional)</td><td>The optional local video program. Not granted at install.</td></tr>
+          </tbody>
+        </table>
+        <p class="narrow">There is no required <code>host_permissions</code> entry.</p>
+      </section>
+
+      <section class="block narrow">
+        <h2>Children</h2>
+        <p>LucidScan is not directed to children under 13.</p>
+      </section>
+
+      <section class="block narrow">
+        <h2>Changes</h2>
+        <p>This version describes extension 0.4.0 as of 20 October 2026. When the policy changes, the date at the top of this page will change with it. A public URL is required before a Chrome Web Store submission. Publishing that URL is a separate step; this draft does not deploy it.</p>
+        <p><a href="index.html">Home</a> · <a href="support.html">Support</a></p>
+      </section>
+    </main>
+
+    <footer class="colophon">
+      <p>The use of information received from Google APIs will adhere to the Chrome Web Store User Data Policy, including the Limited Use requirements.</p>
+      <p>This page does not load third-party scripts, fonts, or analytics.</p>
+    </footer>
+  </div>
+</body>
+</html>
