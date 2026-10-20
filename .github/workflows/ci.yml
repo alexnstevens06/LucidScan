@@ -45,3 +45,23 @@ jobs:
         run: npm test
       - name: health_check (manifest / policy, explicit)
         run: python3 chrome_plugin/scripts/health_check.py
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - name: Install npm dependencies
+        run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Extension e2e (headless Chromium, local fixture)
+        run: npm run test:e2e

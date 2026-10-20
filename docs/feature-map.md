@@ -43,6 +43,7 @@ Each feature and how to verify it (v0.4.0). Extension root: `chrome_plugin/`.
 | Manifest policy (MV3, zero WAR, no static content_scripts, no webNavigation/addHostAccessRequest, no vendored weights, claim-word scan) | `npm test` (health_check.py) |
 | URL guard, origin pattern, hashing, prefilters, cache LRU 200 / 24h TTL | `npm test` (node:test in `chrome_plugin/test/unit/`) |
 | SW starts; 0 badges before Enable | `python3 chrome_plugin/scripts/cdp_smoke.py` |
+| Enable → image badge + selection chip → Disable teardown (headless Chromium, local fixture; `unavailable` if models cannot download) | `npm run test:e2e` |
 | Enable → badges on visible images | `./test/serve.sh`, open sample, Enable → 2 pills (24×24 image shows `local heuristics`) |
 | Selection chip | select a paragraph, scroll/resize → chip follows; flips below near top |
 | Model progress + retry | popup → Models: stage/% text and bar; disconnect network → Retry model load |
