@@ -209,5 +209,12 @@ cython_debug/
 !chrome_plugin/lib/
 !chrome_plugin/lib/**
 
-# npm manifest needed by CI
+# npm
+node_modules/
 !package.json
+!package-lock.json
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/

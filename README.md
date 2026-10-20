@@ -36,9 +36,12 @@ Nothing is injected on any site until you enable it (no static `content_scripts`
 
 ```bash
 npm test                 # = bash scripts/test.sh: syntax check + health_check.py + node:test unit tests (offline, no browser)
+npm run test:e2e         # Playwright: headless Chromium loads unpacked chrome_plugin/, local fixture, Enable → badges, Disable tears down
 python3 chrome_plugin/scripts/cdp_smoke.py   # optional: headless Chrome, Extensions.loadUnpacked, SW alive, 0 badges before Enable
 node --experimental-websocket chrome_plugin/scripts/lifecycle_e2e.mjs /tmp/lucid-e2e   # optional, needs network: enable/disable/re-enable, first-run model load, cross-origin -> unavailable
 ```
+
+`test:e2e` serves its own page on `127.0.0.1` (no external images). Model hosts are blocked by default so badges settle on `unavailable` instead of downloading about 435 MB; `LUCIDSCAN_E2E_ALLOW_MODELS=1` allows the Hugging Face fetch and still accepts either `local score N` or `unavailable` (`MODEL_WAIT_MS` raises the wait). The browser loads a temp copy of `chrome_plugin/` with `host_permissions` for that loopback origin only — the native permission bubble is not a page surface, and without a host grant Chrome hides `tab.url` from the popup. The manifest in git is unchanged.
 
 `health_check.py` checks manifest validity, zero WAR, no static `content_scripts`, no `webNavigation` / `addHostAccessRequest`, no vendored weights, and scans UI strings + README for claim words. Unit tests cover the URL restriction guard, origin patterns, hashing, prefilters, and cache LRU/TTL. The CDP smoke needs `websocket-client` and network for the sample images.
 
@@ -48,7 +51,7 @@ node --experimental-websocket chrome_plugin/scripts/lifecycle_e2e.mjs /tmp/lucid
 - Restricted pages (`chrome://`, `file://`, Web Store, `view-source:`, other extensions) cannot be enabled.
 - Cross-origin images that taint the canvas skip the flat-image prefilter and are sent by URL instead of a canvas copy.
 - First run downloads about **435 MB** from Hugging Face (≈129 MB text + ≈306 MB CLIP fp16; measured, see below); later loads use the browser cache.
-- Granting host permission needs a real click, so automated tests stop at "0 badges before Enable".
+- Granting host permission needs a real click on the native bubble. `npm run test:e2e` pre-grants only the loopback fixture origin on a temp copy so the real popup Enable/Disable path can run headless. The manifest in git still has no install-time host permissions. `cdp_smoke.py` still stops at 0 badges before Enable.
 - Scores are an uncalibrated local signal, not a verdict.
 
 ### What badges mean
