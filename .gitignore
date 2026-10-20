@@ -208,6 +208,7 @@ cython_debug/
 !chrome_plugin/manifest.json
 !chrome_plugin/lib/
 !chrome_plugin/lib/**
+!tsconfig.json
 
 # npm
 node_modules/

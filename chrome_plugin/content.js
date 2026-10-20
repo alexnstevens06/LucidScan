@@ -4,25 +4,44 @@
   // executeScript while a registered content script already injected us; the second copy exits.
   // A hard teardown (Disable / Pause) destroys the instance and clears this guard, so a later
   // Enable injects a fresh one instead of stacking on a zombie.
-  const prior = globalThis.__lucidScanInstance;
+  const lucidRoot = /** @type {LucidGlobal} */ (globalThis);
+  const prior = lucidRoot.__lucidScanInstance;
   if (prior && prior.alive) return;
+  /** @type {LucidInstance} */
   const instance = { alive: true, destroy: null, stats: null };
-  globalThis.__lucidScanInstance = instance;
-  globalThis.__lucidScanContentLoaded = true;
+  lucidRoot.__lucidScanInstance = instance;
+  lucidRoot.__lucidScanContentLoaded = true;
 
   // Every listener/timer this instance adds is tracked so destroy() can remove all of them.
+  /** @type {TrackedListener[]} */
   const listeners = [];
+  /**
+   * @param {EventTarget | null | undefined} target
+   * @param {string} type
+   * @param {EventListener} fn
+   * @param {boolean | AddEventListenerOptions} [opts]
+   */
   function on(target, type, fn, opts) {
     if (!target || typeof target.addEventListener !== "function") return;
     target.addEventListener(type, fn, opts);
     listeners.push({ target, type, fn, opts });
   }
+  /** @type {TrackedChromeListener[]} */
   const chromeListeners = [];
+  /**
+   * @param {any} event
+   * @param {any} fn
+   */
   function onChrome(event, fn) {
     event.addListener(fn);
     chromeListeners.push({ event, fn });
   }
+  /** @type {Set<ReturnType<typeof setTimeout>>} */
   const timers = new Set();
+  /**
+   * @param {Function} fn
+   * @param {number} ms
+   */
   function addTimer(fn, ms) {
     const t = setTimeout(() => {
       timers.delete(t);
@@ -41,6 +60,7 @@
   let sitePaused = false;
   let badgesActive = true; // !sitePaused
 
+  /** @returns {string | null} */
   function currentOriginPattern() {
     try {
       const u = location;
@@ -51,6 +71,7 @@
     }
   }
 
+  /** @param {() => void} [cb] */
   function refreshPauseState(cb) {
     const pattern = currentOriginPattern();
     try {
@@ -70,17 +91,27 @@
   let seq = 0;
   let inFlight = 0;
   let jobGeneration = 0;
+  /** @type {Map<string, (value: ScoreResult) => void>} */
   const pending = new Map();
+  /** @type {Array<() => Promise<void> | void>} */
   const highQueue = []; // text / interactive
+  /** @type {Array<() => Promise<void> | void>} */
   const lowQueue = []; // images
+  /** @type {WeakMap<HTMLImageElement, boolean>} */
   const scoredImgs = new WeakMap();
+  /** @type {Map<HTMLImageElement, BadgeMount>} */
   const imgHosts = new Map();
+  /** @type {HTMLElement | null} */
   let textChip = null;
+  /** @type {HTMLElement | null} */
   let textChipLabel = null;
+  /** @type {ReturnType<typeof setTimeout> | null} */
   let selectionTimer = null;
   let moQueued = false;
+  /** @type {Node[]} */
   let pendingNodes = [];
 
+  /** @param {string} s */
   function hashStr(s) {
     let h = 2166136261;
     for (let i = 0; i < String(s).length; i++) {
@@ -95,7 +126,12 @@
    * Cheap JS prefilters before CLIP (heuristics only — not authenticity).
    * Returns { skip: true, reason } or { skip: false }.
    */
-  function cheapImagePrefilter(img, dataUrl) {
+  /**
+   * @param {HTMLImageElement} img
+   * @param {string | null | undefined} _dataUrl
+   * @returns {{ skip: true, reason: string } | { skip: false }}
+   */
+  function cheapImagePrefilter(img, _dataUrl) {
     const w = img.naturalWidth || img.width || 0;
     const h = img.naturalHeight || img.height || 0;
     if (w > 0 && h > 0 && (w < MIN_IMG || h < MIN_IMG)) {
@@ -114,6 +150,8 @@
         c.width = cw;
         c.height = ch;
         const ctx = c.getContext("2d", { willReadFrequently: true });
+        // No 2d context: same outcome as a thrown draw (caught below) — do not skip.
+        if (!ctx) return { skip: false };
         ctx.drawImage(img, 0, 0, cw, ch);
         const data = ctx.getImageData(0, 0, cw, ch).data;
         let sum = 0;
@@ -136,6 +174,7 @@
     return { skip: false };
   }
 
+  /** @param {HTMLImageElement} img @returns {string | null} */
   function imageToDataUrl(img) {
     try {
       const nw = img.naturalWidth || img.width || 0;
@@ -145,13 +184,16 @@
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.round(nw * scale));
       canvas.height = Math.max(1, Math.round(nh * scale));
-      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       return canvas.toDataURL("image/jpeg", 0.85);
     } catch (_) {
       return null;
     }
   }
 
+  /** @param {HTMLImageElement | null | undefined} img */
   function isSkippableImg(img) {
     if (!img || img.nodeType !== 1) return true;
     if (img.closest("[data-lucidscan-host]")) return true;
@@ -178,6 +220,10 @@
     });
   }
 
+  /**
+   * @param {{ [key: string]: chrome.storage.StorageChange }} changes
+   * @param {string} area
+   */
   function onStorageChanged(changes, area) {
     if (!instance.alive || area !== "local") return;
     if (changes.enabledOrigins) {
@@ -199,6 +245,7 @@
     });
   }
 
+  /** @param {"fixed" | "absolute"} position @returns {BadgeMount} */
   function mountShadowHost(position) {
     const host = document.createElement("div");
     host.setAttribute(BADGE_ATTR, "1");
@@ -243,8 +290,9 @@
     return { host, root, pill };
   }
 
+  /** @param {HTMLImageElement} img @param {HTMLElement} host */
   function placeImageBadge(img, host) {
-    const parent = img.offsetParent || img.parentElement || document.body;
+    const parent = /** @type {HTMLElement} */ (img.offsetParent || img.parentElement || document.body);
     if (getComputedStyle(parent).position === "static") {
       parent.style.position = "relative";
     }
@@ -258,6 +306,7 @@
    * image unreadable, prefilter skip, mock mode) shows "unavailable" with the reason in the
    * tooltip; while the model is downloading it shows progress.
    */
+  /** @param {HTMLElement | null | undefined} pill @param {ScoreResult | null | undefined} result */
   function paintPill(pill, result) {
     if (!pill || !result) return;
     const r = result;
@@ -293,15 +342,23 @@
   const RETRY_BUDGET_MS = 10 * 60 * 1000;
   const REQUEST_TIMEOUT_MS = 12000;
 
+  /** @param {ScoreResult | null | undefined} result */
   function isRetryable(result) {
     if (!result) return true;
     return result.state === "loading" || result.state === "pending" || result.label === "loading";
   }
 
+  /**
+   * @param {string} kind
+   * @param {Record<string, unknown>} payload
+   * @returns {Promise<ScoreResult>}
+   */
   function requestScore(kind, payload) {
     const id = `ls-${++seq}`;
     return new Promise((done) => {
+      /** @type {ReturnType<typeof setTimeout> | null} */
       let timer = null;
+      /** @param {ScoreResult} v */
       const resolve = (v) => {
         if (timer) {
           clearTimeout(timer);
@@ -338,6 +395,10 @@
     });
   }
 
+  /**
+   * @param {(ScoreResult & { type?: string }) | null | undefined} msg
+   * @param {chrome.runtime.MessageSender} sender
+   */
   function onRuntimeMessage(msg, sender) {
     if (!msg) return;
     if (sender && sender.id && sender.id !== chrome.runtime.id) return;
@@ -347,7 +408,7 @@
     }
     if (msg.type === "lucidscan.ping") return; // presence handled by globalThis guard
     if (msg.id && pending.has(msg.id)) {
-      const resolve = pending.get(msg.id);
+      const resolve = /** @type {(value: ScoreResult) => void} */ (pending.get(msg.id));
       pending.delete(msg.id);
       resolve(msg);
     }
@@ -367,12 +428,19 @@
     }
   }
 
+  /** @param {HTMLImageElement | null | undefined} img */
   function enqueueImage(img) {
     if (!badgesActive || !img || scoredImgs.has(img) || isSkippableImg(img)) return;
     scoredImgs.set(img, true);
     scheduleImageAttempt(img, 0, Date.now(), jobGeneration);
   }
 
+  /**
+   * @param {HTMLImageElement} img
+   * @param {number} attempt
+   * @param {number} startedAt
+   * @param {number} gen
+   */
   function scheduleImageAttempt(img, attempt, startedAt, gen) {
     lowQueue.push(async () => {
       if (!instance.alive || gen !== jobGeneration || !badgesActive || !img.isConnected) return;
@@ -418,12 +486,13 @@
   const io = new IntersectionObserver(
     (entries) => {
       for (const e of entries) {
-        if (e.isIntersecting) enqueueImage(e.target);
+        if (e.isIntersecting) enqueueImage(/** @type {HTMLImageElement} */ (e.target));
       }
     },
     { root: null, rootMargin: "80px", threshold: 0.01 }
   );
 
+  /** @param {HTMLImageElement | null | undefined} img */
   function observeImg(img) {
     if (!img || scoredImgs.has(img)) return;
     const hasSrc = !!(img.src || img.currentSrc);
@@ -474,8 +543,9 @@
     pendingNodes = [];
     for (const n of nodes) {
       if (!n || n.nodeType !== 1) continue;
-      if (n.tagName === "IMG") observeImg(n);
-      else if (n.querySelectorAll) n.querySelectorAll("img").forEach(observeImg);
+      const el = /** @type {Element} */ (n);
+      if (el.tagName === "IMG") observeImg(/** @type {HTMLImageElement} */ (el));
+      else if (el.querySelectorAll) el.querySelectorAll("img").forEach(observeImg);
     }
   }
 
@@ -523,12 +593,14 @@
     if (!box || (box.width === 0 && box.height === 0)) return hideTextChip();
 
     ensureTextChip();
-    textChip.style.display = "block";
-    textChip.style.top = `${Math.max(4, box.top - 28)}px`;
-    textChip.style.left = `${Math.max(4, box.left)}px`;
-    textChipLabel.dataset.state = "loading";
-    textChipLabel.textContent = "…";
-    textChipLabel.title = TITLE_SIGNAL;
+    const chip = /** @type {HTMLElement} */ (textChip);
+    const label = /** @type {HTMLElement} */ (textChipLabel);
+    chip.style.display = "block";
+    chip.style.top = `${Math.max(4, box.top - 28)}px`;
+    chip.style.left = `${Math.max(4, box.left)}px`;
+    label.dataset.state = "loading";
+    label.textContent = "…";
+    label.title = TITLE_SIGNAL;
     repositionChip();
 
     const gen = jobGeneration;
@@ -566,7 +638,7 @@
 
   function debouncedSelection() {
     if (!instance.alive) return;
-    clearTimeout(selectionTimer);
+    clearTimeout(selectionTimer ?? undefined);
     selectionTimer = setTimeout(onSelectionChange, SELECTION_DEBOUNCE_MS);
   }
 
@@ -590,6 +662,7 @@
     textChip.style.left = `${Math.round(left)}px`;
   }
 
+  /** @param {boolean} [hard] */
   function teardownAll(hard = false) {
     highQueue.length = 0;
     lowQueue.length = 0;
@@ -605,7 +678,7 @@
     timers.clear();
     for (const resolve of pending.values()) resolve({ state: "unavailable", reason: "torn down" });
     pending.clear();
-    clearTimeout(selectionTimer);
+    clearTimeout(selectionTimer ?? undefined);
     pendingNodes = [];
     if (hard) {
       try { io.disconnect(); } catch (_) {}
@@ -629,9 +702,9 @@
     }
     if (history.pushState === wrappedPush) history.pushState = origPush;
     if (history.replaceState === wrappedReplace) history.replaceState = origReplace;
-    if (globalThis.__lucidScanInstance === instance) {
-      globalThis.__lucidScanInstance = null;
-      globalThis.__lucidScanContentLoaded = false;
+    if (lucidRoot.__lucidScanInstance === instance) {
+      lucidRoot.__lucidScanInstance = null;
+      lucidRoot.__lucidScanContentLoaded = false;
     }
   }
   instance.destroy = destroy;
@@ -650,13 +723,13 @@
 
   // Re-attach badges if a page strips our host nodes (anti-extension). Back off; don't fight forever.
   let stripStrikes = 0;
-  const stripSeen = new WeakSet();
   const stripObserver = new MutationObserver((mutations) => {
     if (!badgesActive || stripStrikes > 6) return;
     let stripped = false;
     for (const m of mutations) {
       for (const n of m.removedNodes) {
-        if (n.nodeType === 1 && (n.hasAttribute?.(BADGE_ATTR) || n.querySelector?.(`[${BADGE_ATTR}]`))) {
+        const el = /** @type {Element} */ (n);
+        if (n.nodeType === 1 && (el.hasAttribute?.(BADGE_ATTR) || el.querySelector?.(`[${BADGE_ATTR}]`))) {
           stripped = true;
         }
       }
@@ -696,16 +769,28 @@
   // History API / SPA soft navigation without extra permissions. Originals are restored on destroy.
   const origPush = history.pushState;
   const origReplace = history.replaceState;
-  const wrappedPush = function (...args) {
-    const r = origPush.apply(this, args);
-    queueMicrotask(rebindAfterSoftNav);
-    return r;
-  };
-  const wrappedReplace = function (...args) {
-    const r = origReplace.apply(this, args);
-    queueMicrotask(rebindAfterSoftNav);
-    return r;
-  };
+  const wrappedPush = /** @type {History["pushState"]} */ (
+    /**
+     * @this {History}
+     * @param {...any} args
+     */
+    function (...args) {
+      const r = origPush.apply(this, /** @type {Parameters<History["pushState"]>} */ (args));
+      queueMicrotask(rebindAfterSoftNav);
+      return r;
+    }
+  );
+  const wrappedReplace = /** @type {History["replaceState"]} */ (
+    /**
+     * @this {History}
+     * @param {...any} args
+     */
+    function (...args) {
+      const r = origReplace.apply(this, /** @type {Parameters<History["replaceState"]>} */ (args));
+      queueMicrotask(rebindAfterSoftNav);
+      return r;
+    }
+  );
   history.pushState = wrappedPush;
   history.replaceState = wrappedReplace;
   on(window, "popstate", rebindAfterSoftNav);
@@ -719,7 +804,7 @@
     on(window.visualViewport, "scroll", repositionChip);
   }
   on(document, "keydown", (e) => {
-    if (e.key === "Escape") hideTextChip();
+    if (/** @type {KeyboardEvent} */ (e).key === "Escape") hideTextChip();
   });
   onChrome(chrome.runtime.onMessage, onRuntimeMessage);
   onChrome(chrome.storage.onChanged, onStorageChanged);

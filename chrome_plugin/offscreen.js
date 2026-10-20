@@ -24,26 +24,32 @@ const IMAGE_LABELS = [
   "a synthetic computer-generated or AI-generated image",
 ];
 
+/** @type {Map<string, { result: ModelScore, ts: number }>} */
 const imageCache = new Map(); // hash -> result (memory)
 const IMAGE_CACHE_MAX = 200;
 const IMAGE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const IDB_NAME = "lucidscan-cache";
 const IDB_STORE = "imageScores";
+/** @type {Promise<IDBDatabase> | null} */
 let idbReady = null;
 
+/** @param {string} key @param {ModelScore} result */
 function memoryCacheSet(key, result) {
   if (imageCache.has(key)) imageCache.delete(key);
   imageCache.set(key, { result, ts: Date.now() });
   while (imageCache.size > IMAGE_CACHE_MAX) {
     const oldest = imageCache.keys().next().value;
+    if (oldest === undefined) break;
     imageCache.delete(oldest);
   }
 }
 
+/** @param {number | null | undefined} ts */
 function isFresh(ts) {
   return typeof ts === "number" && Date.now() - ts < IMAGE_CACHE_TTL_MS;
 }
 
+/** @returns {Promise<IDBDatabase>} */
 function openIdb() {
   if (idbReady) return idbReady;
   idbReady = new Promise((resolve, reject) => {
@@ -64,6 +70,7 @@ function openIdb() {
   return idbReady;
 }
 
+/** @param {string} key @returns {Promise<{ key?: string, result?: ModelScore, ts?: number } | null>} */
 async function idbGet(key) {
   try {
     const db = await openIdb();
@@ -78,10 +85,12 @@ async function idbGet(key) {
   }
 }
 
+/** @param {string} key @param {ModelScore} result */
 async function idbPut(key, result) {
   try {
     const db = await openIdb();
-    await new Promise((resolve) => {
+    /** @type {Promise<void>} */
+    const write = new Promise((resolve) => {
       const tx = db.transaction(IDB_STORE, "readwrite");
       const store = tx.objectStore(IDB_STORE);
       store.put({ key, result, ts: Date.now() });
@@ -96,7 +105,7 @@ async function idbPut(key, result) {
         const cursorReq = store.openCursor();
         let toDelete = n - IMAGE_CACHE_MAX;
         cursorReq.onsuccess = (ev) => {
-          const cursor = ev.target.result;
+          const cursor = /** @type {IDBRequest<IDBCursorWithValue | null>} */ (ev.target).result;
           if (!cursor || toDelete <= 0) {
             resolve();
             return;
@@ -109,9 +118,11 @@ async function idbPut(key, result) {
       };
       countReq.onerror = () => resolve();
     });
+    await write;
   } catch (_) {}
 }
 
+/** @param {string} key */
 async function cacheGet(key) {
   if (imageCache.has(key)) {
     const hit = imageCache.get(key);
@@ -131,17 +142,20 @@ async function cacheGet(key) {
     // expired — best-effort delete
     try {
       const db = await openIdb();
-      await new Promise((resolve) => {
+      /** @type {Promise<void>} */
+      const drop = new Promise((resolve) => {
         const tx = db.transaction(IDB_STORE, "readwrite");
         tx.objectStore(IDB_STORE).delete(key);
         tx.oncomplete = () => resolve();
         tx.onerror = () => resolve();
       });
+      await drop;
     } catch (_) {}
   }
   return null;
 }
 
+/** @param {string} key @param {ModelScore} result */
 async function cacheSet(key, result) {
   const slim = {
     score: result.score,
@@ -152,14 +166,22 @@ async function cacheSet(key, result) {
   memoryCacheSet(key, slim);
   await idbPut(key, slim);
 }
+/** @type {import("./lib/transformers.min.js").Pipeline | null} */
 let textPipe = null;
+/** @type {import("./lib/transformers.min.js").Pipeline | null} */
 let imagePipe = null;
+/** @type {"idle" | "loading" | "ready" | "error"} */
 let textStatus = "idle"; // idle | loading | ready | error
+/** @type {"idle" | "loading" | "ready" | "error"} */
 let imageStatus = "idle";
+/** @type {string | null} */
 let textError = null;
+/** @type {string | null} */
 let imageError = null;
 let preferMock = false;
+/** @type {{ text: string | null, image: string | null }} */
 let deviceUsed = { text: null, image: null };
+/** @type {LoadProgress} */
 let loadProgress = { which: null, status: "idle", percent: null, file: null, message: null };
 let loadCancelled = false;
 let textErrorAt = 0;
@@ -177,6 +199,7 @@ function requestCancel() {
 }
 
 /** Start a background load if needed; returns true when the pipe is ready now. */
+/** @param {"text" | "image"} which */
 function kickLoad(which) {
   const ready = which === "text" ? !!textPipe : !!imagePipe;
   if (ready) return true;
@@ -203,6 +226,7 @@ function configureEnv() {
 
 configureEnv();
 
+/** @param {unknown} _obj */
 function storageSet(_obj) {
   // No-op. This document has no storage API; status goes out on score/status replies.
 }
@@ -215,6 +239,7 @@ try {
 } catch (_) {}
 chrome.runtime.sendMessage({ type: "offscreen.ready", ready: true }).catch(() => {});
 
+/** @param {string} s */
 function hashStr(s) {
   let h = 2166136261;
   for (let i = 0; i < String(s).length; i++) {
@@ -226,10 +251,12 @@ function hashStr(s) {
 
 // No stand-in scores: when a model is not ready or the input cannot be read, the answer is
 // "loading" (retryable) or "unavailable" (with a reason) — never a made-up number.
+/** @param {unknown} reason */
 function unavailable(reason) {
   return { state: "unavailable", label: "unavailable", reason: String(reason || "models unavailable") };
 }
 
+/** @param {"text" | "image"} which */
 function loadingReply(which) {
   const p = loadProgress && loadProgress.which === which ? loadProgress.percent : null;
   return { state: "loading", label: "loading", mode: "transformers", progress: typeof p === "number" ? p : null };
@@ -242,6 +269,10 @@ const RELOAD_AFTER_ERROR_MS = 60 * 1000;
  * canvas was readable. Otherwise (tainted canvas: cross-origin image without CORS) fetch src from
  * the extension origin; that only succeeds when the server sends CORS headers or the user granted
  * host permission for the image's origin. Failure => unavailable, not a fallback number.
+ */
+/**
+ * @param {string | null | undefined} src
+ * @param {string | null | undefined} dataUrl
  */
 async function resolveImageInput(src, dataUrl) {
   if (dataUrl) return { input: dataUrl };
@@ -267,6 +298,7 @@ async function resolveImageInput(src, dataUrl) {
   }
 }
 
+/** @param {InferenceOverrides | null} [overrides] */
 async function loadSettings(overrides = null) {
   // Flags are relayed by the service worker (this document has no storage API).
   // No overrides: keep the current mode (default transformers / preferMock false).
@@ -277,14 +309,16 @@ async function loadSettings(overrides = null) {
 
 async function canUseWebGPU() {
   try {
-    if (!navigator.gpu) return false;
-    const adapter = await navigator.gpu.requestAdapter();
+    const nav = /** @type {Navigator & { gpu?: { requestAdapter: () => Promise<unknown> } }} */ (navigator);
+    if (!nav.gpu) return false;
+    const adapter = await nav.gpu.requestAdapter();
     return !!adapter;
   } catch (_) {
     return false;
   }
 }
 
+/** @param {string} which @returns {(info: import("./lib/transformers.min.js").ProgressInfo) => void} */
 function makeProgressHandler(which) {
   return (info) => {
     if (loadCancelled) return;
@@ -294,7 +328,7 @@ function makeProgressHandler(which) {
     else if (typeof info?.loaded === "number" && typeof info?.total === "number" && info.total > 0) {
       percent = Math.round((100 * info.loaded) / info.total);
     }
-    const file = info?.file ? String(info.file).split("/").pop() : null;
+    const file = info?.file ? (String(info.file).split("/").pop() ?? null) : null;
     loadProgress = {
       which,
       status,
@@ -308,6 +342,13 @@ function makeProgressHandler(which) {
   };
 }
 
+/**
+ * @param {string} task
+ * @param {keyof typeof MODEL_REVISIONS} model
+ * @param {string} dtype
+ * @param {string} [which]
+ * @returns {Promise<{ pipe: import("./lib/transformers.min.js").Pipeline, device: string }>}
+ */
 async function createPipe(task, model, dtype, which = "model") {
   // Prefer WebGPU only when an adapter exists; otherwise WASM (ORT).
   const attempts = [];
@@ -358,7 +399,8 @@ async function ensureTextPipe() {
     for (let i = 0; i < 120; i++) {
       await new Promise((r) => setTimeout(r, 500));
       if (textPipe) return textPipe;
-      if (textStatus === "error") throw new Error(textError || "text model failed");
+      // Status can flip while this wait yields; the narrowed "loading" check is not stable.
+      if (/** @type {string} */ (textStatus) === "error") throw new Error(textError || "text model failed");
     }
     throw new Error("text model load timeout");
   }
@@ -397,7 +439,7 @@ async function ensureImagePipe() {
     for (let i = 0; i < 180; i++) {
       await new Promise((r) => setTimeout(r, 500));
       if (imagePipe) return imagePipe;
-      if (imageStatus === "error") throw new Error(imageError || "image model failed");
+      if (/** @type {string} */ (imageStatus) === "error") throw new Error(imageError || "image model failed");
     }
     throw new Error("image model load timeout");
   }
@@ -440,6 +482,7 @@ async function ensureImagePipe() {
  * Prefer the score of the AI/generated-looking label when present; else top score.
  * Label strings stay "local score" — never "AI-detected".
  */
+/** @param {unknown} output */
 function textOutputToScore(output) {
   const rows = Array.isArray(output) ? output : [output];
   const flat = rows.flat().filter(Boolean);
@@ -452,6 +495,7 @@ function textOutputToScore(output) {
   return clamp01(top.score ?? 0.5);
 }
 
+/** @param {unknown} output */
 function imageOutputToScore(output) {
   const rows = Array.isArray(output) ? output : [output];
   const synth = rows.find((r) => /synthetic|generated|ai/i.test(String(r.label || "")));
@@ -461,10 +505,12 @@ function imageOutputToScore(output) {
   return clamp01(rows[0]?.score ?? 0.5);
 }
 
+/** @param {unknown} n */
 function clamp01(n) {
   return Math.max(0.01, Math.min(0.99, Number(n) || 0.5));
 }
 
+/** @param {unknown} text @param {InferenceOverrides | null} [overrides] */
 async function scoreText(text, overrides = null) {
   await loadSettings(overrides);
   const sample = String(text || "").slice(0, 4000);
@@ -474,7 +520,8 @@ async function scoreText(text, overrides = null) {
     return loadingReply("text");
   }
   try {
-    const out = await textPipe(sample);
+    const pipe = /** @type {import("./lib/transformers.min.js").Pipeline} */ (textPipe);
+    const out = await pipe(sample);
     return {
       score: textOutputToScore(out),
       label: "local score",
@@ -489,6 +536,10 @@ async function scoreText(text, overrides = null) {
   }
 }
 
+/**
+ * @param {{ src?: string | null, dataUrl?: string | null, cacheKey?: string | null }} input
+ * @param {InferenceOverrides | null} [overrides]
+ */
 async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
   await loadSettings(overrides);
   if (preferMock) return unavailable("models disabled in settings (mock mode)");
@@ -506,7 +557,8 @@ async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
   const resolved = await resolveImageInput(src, dataUrl);
   if (resolved.error) return unavailable(resolved.error);
   try {
-    const out = await imagePipe(resolved.input, IMAGE_LABELS);
+    const pipe = /** @type {import("./lib/transformers.min.js").Pipeline} */ (imagePipe);
+    const out = await pipe(/** @type {string} */ (resolved.input), IMAGE_LABELS);
     const result = {
       score: imageOutputToScore(out),
       label: "local score",
@@ -525,6 +577,7 @@ async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
   }
 }
 
+/** @param {string} [which] @param {InferenceOverrides | null} [overrides] */
 async function warmup(which = "both", overrides = null) {
   await loadSettings(overrides);
   loadCancelled = false;
@@ -569,6 +622,7 @@ function statusPayload() {
 // scripts' runtime.sendMessage also reaches this listener, so reject anything from a tab
 // context or a non-extension URL.
 const EXTENSION_ORIGIN = chrome.runtime.getURL("");
+/** @param {chrome.runtime.MessageSender | null | undefined} sender */
 function isTrustedSender(sender) {
   if (!sender || sender.id !== chrome.runtime.id) return false;
   if (sender.tab) return false;

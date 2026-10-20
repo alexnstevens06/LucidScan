@@ -36,6 +36,8 @@ Nothing is injected on any site until you enable it (no static `content_scripts`
 
 ```bash
 npm test                 # = bash scripts/test.sh: syntax check + health_check.py + node:test unit tests (offline, no browser)
+npm run lint             # ESLint flat config on extension source (not the vendored lib/ bundle)
+npm run typecheck        # tsc checkJs + JSDoc on the same sources (transformers.min.js excluded)
 npm run test:e2e         # Playwright: headless Chromium loads unpacked chrome_plugin/, local fixture, Enable → badges, Disable tears down
 python3 chrome_plugin/scripts/cdp_smoke.py   # optional: headless Chrome, Extensions.loadUnpacked, SW alive, 0 badges before Enable
 node --experimental-websocket chrome_plugin/scripts/lifecycle_e2e.mjs /tmp/lucid-e2e   # optional, needs network: enable/disable/re-enable, first-run model load, cross-origin -> unavailable
