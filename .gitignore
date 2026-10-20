@@ -144,8 +144,9 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
+# mkdocs documentation. /site is the LucidScan static landing page (source),
+# not a mkdocs build. If mkdocs is added later, set site_dir to another folder.
+# /site
 
 # mypy
 .mypy_cache/
@@ -194,6 +195,9 @@ cython_debug/
 *.jpeg
 *.jpg
 *.png
+# Store listing rasters (the SVG sources live beside them)
+!store/assets/icon-128.png
+!store/assets/promo-440x280.png
 *.mp4
 *.avi
 *.mov

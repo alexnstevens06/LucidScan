@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LucidScan support</title>
+  <meta name="description" content="How to ask a question about LucidScan, what a local signal means, and known limits. Draft page. Not a store listing.">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <div class="sheet">
+    <header class="mast">
+      <a class="brand" href="index.html">
+        <img src="icon.svg" width="36" height="36" alt="">
+        LucidScan
+      </a>
+      <p class="draft">Draft. Not in the Chrome Web Store.</p>
+      <nav aria-label="On this site">
+        <a href="index.html#how">How it works</a>
+        <a href="support.html">Support</a>
+        <a href="privacy.html">Privacy</a>
+      </nav>
+    </header>
+
+    <main id="content">
+      <section class="block">
+        <p class="kicker">Support</p>
+        <h1>Questions and surprising scores</h1>
+        <p class="lede narrow">LucidScan is maintained by Alex Stevens. The contact address is <a href="https://github.com/alexnstevens06/LucidScan/issues">GitHub issues</a> on the source repository. There is no account system and no support inbox inside the extension.</p>
+        <p class="narrow">The same section is on the <a href="index.html#support">home page</a>. Development setup is under <a href="index.html#load">Load unpacked</a>. That path is a local checkout, not a store install.</p>
+      </section>
+
+      <section class="block" id="report">
+        <h2>What a badge is</h2>
+        <p class="narrow">The badge is a local signal. It may suggest whether an image or a passage you select could be AI-generated. It is a signal, not a verdict. A number on the badge is uncalibrated output from the on-device model.</p>
+      </section>
+
+      <section class="block">
+        <h2>How to report a surprising score</h2>
+        <p class="narrow">Open a GitHub issue and include:</p>
+        <ul class="plain narrow">
+          <li>Chrome version, and whether the popup showed WebGPU or WASM if that text was visible.</li>
+          <li>The site's host. Leave off query strings that identify you or a private page.</li>
+          <li>The badge text, such as <code>local score</code> and its number, <code>unavailable</code>, or a download line.</li>
+          <li>Whether the popup still showed a model download.</li>
+        </ul>
+        <p class="narrow">Include the selected text or a copy of the image only if you mean to publish it. The extension does not send that content to the maintainer, and there is no telemetry to attach.</p>
+      </section>
+
+      <section class="block" id="limits">
+        <h2>Known limits</h2>
+        <ul class="plain narrow">
+          <li>Badges appear only on sites you enable. <code>chrome://</code>, <code>file://</code>, the Chrome Web Store, and other extensions cannot be enabled.</li>
+          <li>Cross-origin frames are skipped unless that origin is enabled on its own. Same-origin frames may be included.</li>
+          <li>A cross-origin image that taints the canvas is requested again by its URL. If that fails, the badge says unavailable.</li>
+          <li>Tiny images, tiny data URIs, and near-flat images can skip the image model and show unavailable, with the reason in the tooltip.</li>
+          <li>The first run downloads about 435 MB from Hugging Face (about 129 MB for the text model and about 306 MB for the image model). Later runs use the browser cache.</li>
+          <li>Both models are English-centric. Short selections under 12 characters do not show a chip.</li>
+          <li>The CLIP model card describes deployed use as out of scope. The image badge is local signal tooling.</li>
+          <li>Pause hides badges and keeps the site enabled. Disable removes that site. Clear all enabled sites resets the list. Those controls do not delete the 24-hour score cache.</li>
+          <li>An optional right-click item, "Scan this video (optional server)", can POST a video address to <code>http://localhost:5000/detect</code> if you use it and that program is running. Ordinary badges do not use it. It is proposed for removal before any public submission.</li>
+        </ul>
+      </section>
+
+      <section class="block">
+        <h2>Privacy</h2>
+        <p class="narrow">What stays on the device, and what the Hugging Face download reveals, is in the <a href="privacy.html">privacy policy</a>. The Limited Use statement is on that page under <a href="privacy.html#limited-use">Limited Use</a>.</p>
+      </section>
+    </main>
+
+    <footer class="colophon">
+      <p>The use of information received from Google APIs will adhere to the Chrome Web Store User Data Policy, including the Limited Use requirements.</p>
+      <p><a href="index.html">Home</a> · <a href="privacy.html">Privacy policy</a> · <a href="https://github.com/alexnstevens06/LucidScan/issues">GitHub issues</a></p>
+      <p>This page does not load third-party scripts, fonts, or analytics.</p>
+    </footer>
+  </div>
+</body>
+</html>

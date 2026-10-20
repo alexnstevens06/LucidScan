@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LucidScan — a local signal, not a verdict</title>
+  <meta name="description" content="LucidScan shows an on-device local signal badge on images and selected text, only on websites you turn on. Draft page. Not a Chrome Web Store listing.">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <div class="sheet">
+    <header class="mast">
+      <a class="brand" href="index.html">
+        <img src="icon.svg" width="36" height="36" alt="">
+        LucidScan
+      </a>
+      <p class="draft">Draft. Not in the Chrome Web Store.</p>
+      <nav aria-label="On this site">
+        <a href="#how">How it works</a>
+        <a href="support.html">Support</a>
+        <a href="privacy.html">Privacy</a>
+      </nav>
+    </header>
+
+    <main id="content">
+      <div class="hero">
+        <div>
+          <p class="kicker">On your device</p>
+          <h1>A signal, not a verdict.</h1>
+          <p class="lede">LucidScan shows a small badge on images and on text you select. Scoring stays on your device, and it runs only on websites you turn on.</p>
+          <p class="purpose">LucidScan shows an on-device "local signal" badge on images and selected text, only on websites the user turns it on for, to suggest whether that content may be AI-generated.</p>
+          <p class="actions">
+            <a class="button" href="#how">How it works</a>
+            <a class="text-link" href="#load">Load unpacked for development</a>
+          </p>
+        </div>
+        <figure class="stage">
+          <div class="page-mock" aria-hidden="true">
+            <div class="bar"></div>
+            <div class="body">
+              <div class="photo"></div>
+              <span class="pill on-photo">local signal</span>
+              <div class="lines">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <span class="pill chip">local signal</span>
+            </div>
+          </div>
+          <figcaption>Illustration of the badge on an image and on a selection. The real badge reads "local score" plus a number, or "unavailable". This drawing is not a screenshot.</figcaption>
+        </figure>
+      </div>
+
+      <div class="band">
+        <article>
+          <p class="num">01</p>
+          <h3>On this device</h3>
+          <p>Transformers.js runs in an offscreen document. The runtime tries WebGPU, then WASM.</p>
+        </article>
+        <article>
+          <p class="num">02</p>
+          <h3>One site at a time</h3>
+          <p>Nothing is injected until you enable that site and allow it. Disable removes the site.</p>
+        </article>
+        <article>
+          <p class="num">03</p>
+          <h3>A local signal</h3>
+          <p>The badge may suggest that content could be AI-generated. The number is uncalibrated.</p>
+        </article>
+      </div>
+
+      <section class="block" id="how">
+        <h2>How it works</h2>
+        <ol class="steps narrow">
+          <li>Load the extension from a local checkout. The steps are under <a href="#load">Load unpacked</a>. This page has no store install.</li>
+          <li>Open a normal http or https page. Restricted pages such as <code>chrome://</code> and <code>file://</code> cannot be enabled.</li>
+          <li>Choose <strong>Enable badges on this site</strong>, or press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>, and allow that site.</li>
+          <li>A visible image can show a corner badge. Selecting at least 12 characters can show a floating chip.</li>
+          <li>The first use downloads model weights from Hugging Face, about 435 MB. Later runs use the browser cache. The popup shows progress and a <strong>Retry model load</strong> control.</li>
+        </ol>
+      </section>
+
+      <section class="block" id="labels">
+        <h2>What a badge can say</h2>
+        <table>
+          <thead>
+            <tr><th>Label</th><th>Meaning</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>…</code></td><td>A score is in progress.</td></tr>
+            <tr><td><code>downloading model</code> or <code>loading model…</code></td><td>Weights are still downloading or loading. The badge retries on its own.</td></tr>
+            <tr><td><code>local score</code> and a number</td><td>An on-device signal from 0 to 100 on the badge. It may suggest whether the content could be AI-generated. It is a signal, not a verdict.</td></tr>
+            <tr><td><code>unavailable</code></td><td>No score. The model failed, the image could not be read, or a prefilter skipped it. The reason is in the tooltip. The badge does not fill in a stand-in number.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="block" id="models">
+        <h2>Models</h2>
+        <p class="narrow">Scoring uses Transformers.js 3.8.1. Revisions are pinned in the extension.</p>
+        <table>
+          <thead>
+            <tr><th>Path</th><th>Model</th><th>Revision</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Selected text (q8)</td>
+              <td><code>onnx-community/tmr-ai-text-detector-ONNX</code></td>
+              <td><code>b9aa251e5bcda7e429fcc936767d921435945b60</code></td>
+            </tr>
+            <tr>
+              <td>Images (fp16, quantized fallback)</td>
+              <td><code>Xenova/clip-vit-base-patch32</code></td>
+              <td><code>d15189d7028b43f1d3e65039190477f6af591c2a</code></td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="callout narrow">The CLIP model card describes deployed use as out of scope pending task-specific testing. Treat the image badge as local signal tooling.</p>
+      </section>
+
+      <section class="block" id="load">
+        <h2>Load unpacked</h2>
+        <p class="narrow">For development from the source repository. This is not a store install, and there is no store listing to add.</p>
+        <ol class="steps narrow">
+          <li>Open <code>chrome://extensions</code>, turn on Developer mode, choose Load unpacked, and select the <code>chrome_plugin/</code> folder from a checkout of <a href="https://github.com/alexnstevens06/LucidScan">the repository</a>.</li>
+          <li>Serve the sample page over http. Enable does not work on <code>file://</code>.</li>
+          <li>Open the sample page, then choose Enable badges on this site and allow it.</li>
+        </ol>
+      </section>
+
+      <section class="block" id="support">
+        <h2>Support</h2>
+        <p class="narrow">LucidScan is maintained by Alex Stevens. Write to <a href="https://github.com/alexnstevens06/LucidScan/issues">GitHub issues</a>. The same notes are on the <a href="support.html">support page</a>.</p>
+        <h3>A surprising score</h3>
+        <p class="narrow">A score is an uncalibrated local signal. If one looks wrong for what you were reading, open an issue with your Chrome version, the site's host (leave off private query strings), the badge text, and whether the popup still showed a model download. Include the selected text only if you mean to publish it. There is no telemetry, so the report is the only copy of what you saw.</p>
+        <h3>Limits</h3>
+        <ul class="plain narrow">
+          <li>Cross-origin frames are skipped unless that origin is enabled on its own.</li>
+          <li>A cross-origin image that taints the canvas is requested again by URL. If that fails, the badge says unavailable.</li>
+          <li>The first run downloads about 435 MB from Hugging Face.</li>
+          <li>Both bundled models are English-centric.</li>
+          <li>An optional right-click item can talk to a program you run at <code>localhost:5000</code>. Ordinary badges do not use it. It is proposed for removal before any public submission.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="colophon">
+      <p>The use of information received from Google APIs will adhere to the Chrome Web Store User Data Policy, including the Limited Use requirements.</p>
+      <p><a href="privacy.html">Privacy policy</a> · <a href="privacy.html#limited-use">Limited Use</a> · <a href="support.html">Support</a> · <a href="https://github.com/alexnstevens06/LucidScan">Source</a></p>
+      <p>This page does not load third-party scripts, fonts, or analytics.</p>
+    </footer>
+  </div>
+</body>
+</html>

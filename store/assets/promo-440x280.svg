@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="280" viewBox="0 0 440 280">
+  <title>LucidScan</title>
+  <desc>440 by 280 promotional tile. A graphic of an on-device local-signal badge, not a product screenshot.</desc>
+  <rect width="440" height="280" fill="#0f141d"/>
+  <rect width="6" height="280" fill="#6bc4a0"/>
+  <text x="28" y="52" fill="#6bc4a0" font-family="Inter, Liberation Sans, sans-serif" font-size="12" font-weight="600" letter-spacing="1.6">LOCAL SIGNAL</text>
+  <text x="28" y="98" fill="#e8eef7" font-family="Inter, Liberation Sans, sans-serif" font-size="34" font-weight="650">LucidScan</text>
+  <text x="28" y="132" fill="#f4f8ff" font-family="Inter, Liberation Sans, sans-serif" font-size="18" font-weight="600">A signal, not a verdict.</text>
+  <text x="28" y="176" fill="#9aabbf" font-family="Inter, Liberation Sans, sans-serif" font-size="14">On-device badges for images</text>
+  <text x="28" y="196" fill="#9aabbf" font-family="Inter, Liberation Sans, sans-serif" font-size="14">and selected text, only on</text>
+  <text x="28" y="216" fill="#9aabbf" font-family="Inter, Liberation Sans, sans-serif" font-size="14">sites you turn on.</text>
+  <rect x="248" y="32" width="164" height="216" rx="14" fill="#182233" stroke="#2a3b55"/>
+  <rect x="260" y="46" width="140" height="188" rx="8" fill="#f4f7fb"/>
+  <rect x="272" y="60" width="116" height="72" rx="4" fill="#d5e0ee"/>
+  <path d="M272 120 L300 96 L324 114 L360 84 L388 120 L388 132 L272 132 Z" fill="#8eabc8"/>
+  <circle cx="292" cy="84" r="6" fill="#f4e7c3"/>
+  <rect x="280" y="68" width="78" height="18" rx="9" fill="#101826" stroke="#78dcb4" stroke-width="1"/>
+  <text x="290" y="80.5" fill="#f4f8ff" font-family="Inter, Liberation Sans, sans-serif" font-size="9" font-weight="600">local signal</text>
+  <rect x="272" y="146" width="100" height="5" rx="2" fill="#d0d8e4"/>
+  <rect x="272" y="158" width="116" height="5" rx="2" fill="#d0d8e4"/>
+  <rect x="272" y="156" width="92" height="9" rx="2" fill="#6bc4a0" opacity="0.35"/>
+  <rect x="272" y="170" width="72" height="5" rx="2" fill="#d0d8e4"/>
+  <rect x="272" y="186" width="78" height="18" rx="9" fill="#101826" stroke="#78dcb4" stroke-width="1"/>
+  <text x="282" y="198.5" fill="#f4f8ff" font-family="Inter, Liberation Sans, sans-serif" font-size="9" font-weight="600">local signal</text>
+</svg>
