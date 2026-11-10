@@ -5,8 +5,8 @@
  * Images: Xenova/clip-vit-base-patch32 zero-shot signal, visible-only + src-hash cache
  * Desklib/Flask are NOT used here.
  *
- * UI contract: return { score, label: "local score"|"loading"|"offline", state, mode }
- * Never claim authenticity.
+ * UI contract: return { score, label: "local score"|"loading"|"unavailable", state, mode }
+ * Never claim authenticity. Empty output is unavailable — no stand-in score.
  */
 
 import { pipeline, env } from "./lib/transformers.min.js";
@@ -386,6 +386,8 @@ async function createPipe(task, model, dtype, which = "model") {
     } catch (err) {
       lastErr = err;
       console.warn("[LucidScan] pipeline attempt failed:", opts.label, err?.message || err);
+      // A cancelled load must not start the next backend download.
+      if (loadCancelled) break;
     }
   }
   throw lastErr || new Error("no pipeline backend available");
@@ -482,38 +484,49 @@ async function ensureImagePipe() {
  * Prefer the score of the AI/generated-looking label when present; else top score.
  * Label strings stay "local score" — never "AI-detected".
  */
-/** @param {unknown} output */
+/** @param {unknown} value @returns {number | null} */
+function clamp01(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(0.01, Math.min(0.99, value));
+}
+
+/** @param {unknown} output @returns {number | null} */
 function textOutputToScore(output) {
   const rows = Array.isArray(output) ? output : [output];
   const flat = rows.flat().filter(Boolean);
-  if (!flat.length) return 0.5;
+  if (!flat.length) return null;
   const aiLike = flat.find((r) => /ai|generated|machine|fake|synthetic/i.test(String(r.label || "")));
   const humanLike = flat.find((r) => /human|real|authentic|organic/i.test(String(r.label || "")));
-  if (aiLike && typeof aiLike.score === "number") return clamp01(aiLike.score);
-  if (humanLike && typeof humanLike.score === "number") return clamp01(1 - humanLike.score);
+  const aiScore = aiLike ? clamp01(aiLike.score) : null;
+  if (aiScore != null) return aiScore;
+  if (humanLike && typeof humanLike.score === "number") {
+    const humanScore = clamp01(1 - humanLike.score);
+    if (humanScore != null) return humanScore;
+  }
   const top = flat.reduce((a, b) => (a.score > b.score ? a : b));
-  return clamp01(top.score ?? 0.5);
+  return clamp01(top ? top.score : null);
 }
 
-/** @param {unknown} output */
+/** @param {unknown} output @returns {number | null} */
 function imageOutputToScore(output) {
-  const rows = Array.isArray(output) ? output : [output];
+  const rows = (Array.isArray(output) ? output : [output]).filter(Boolean);
   const synth = rows.find((r) => /synthetic|generated|ai/i.test(String(r.label || "")));
-  if (synth && typeof synth.score === "number") return clamp01(synth.score);
+  const synthScore = synth ? clamp01(synth.score) : null;
+  if (synthScore != null) return synthScore;
   const real = rows.find((r) => /photograph|real-world|real/i.test(String(r.label || "")));
-  if (real && typeof real.score === "number") return clamp01(1 - real.score);
-  return clamp01(rows[0]?.score ?? 0.5);
-}
-
-/** @param {unknown} n */
-function clamp01(n) {
-  return Math.max(0.01, Math.min(0.99, Number(n) || 0.5));
+  if (real && typeof real.score === "number") {
+    const realScore = clamp01(1 - real.score);
+    if (realScore != null) return realScore;
+  }
+  if (!rows.length) return null;
+  return clamp01(rows[0].score);
 }
 
 /** @param {unknown} text @param {InferenceOverrides | null} [overrides] */
 async function scoreText(text, overrides = null) {
   await loadSettings(overrides);
-  const sample = String(text || "").slice(0, 4000);
+  const sample = String(text || "").trim().slice(0, 4000);
+  if (!sample) return unavailable("nothing to scan");
   if (preferMock) return unavailable("models disabled in settings (mock mode)");
   if (!kickLoad("text")) {
     if (textStatus === "error") return unavailable(`text model failed to load: ${textError}`);
@@ -522,8 +535,10 @@ async function scoreText(text, overrides = null) {
   try {
     const pipe = /** @type {import("./lib/transformers.min.js").Pipeline} */ (textPipe);
     const out = await pipe(sample);
+    const score = textOutputToScore(out);
+    if (typeof score !== "number") return unavailable("text model returned no score");
     return {
-      score: textOutputToScore(out),
+      score,
       label: "local score",
       state: "signal",
       mode: "transformers",
@@ -537,11 +552,15 @@ async function scoreText(text, overrides = null) {
 }
 
 /**
- * @param {{ src?: string | null, dataUrl?: string | null, cacheKey?: string | null }} input
+ * @param {{ src?: string | null, dataUrl?: string | null, cacheKey?: string | null } | null | undefined} input
  * @param {InferenceOverrides | null} [overrides]
  */
-async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
+async function scoreImage(input, overrides = null) {
+  const src = input && input.src;
+  const dataUrl = input && input.dataUrl;
+  const cacheKey = input && input.cacheKey;
   await loadSettings(overrides);
+  if (!dataUrl && !src) return unavailable("nothing to scan");
   if (preferMock) return unavailable("models disabled in settings (mock mode)");
   const key = cacheKey || hashStr(dataUrl || src || "");
   const cached = await cacheGet(key);
@@ -559,8 +578,10 @@ async function scoreImage({ src, dataUrl, cacheKey }, overrides = null) {
   try {
     const pipe = /** @type {import("./lib/transformers.min.js").Pipeline} */ (imagePipe);
     const out = await pipe(/** @type {string} */ (resolved.input), IMAGE_LABELS);
+    const score = imageOutputToScore(out);
+    if (typeof score !== "number") return unavailable("image model returned no score");
     const result = {
-      score: imageOutputToScore(out),
+      score,
       label: "local score",
       state: "signal",
       mode: "transformers",
@@ -599,6 +620,17 @@ async function warmup(which = "both", overrides = null) {
     }
   }
   return out;
+}
+
+/** Unexpected handler failures are terminal. They must not look like a retryable load. */
+/** @param {string | undefined} id @param {unknown} err */
+function failureReply(id, err) {
+  return {
+    id,
+    label: "unavailable",
+    state: "unavailable",
+    reason: `scoring failed: ${String(err && /** @type {{ message?: string }} */ (err).message ? /** @type {{ message?: string }} */ (err).message : err)}`,
+  };
 }
 
 function statusPayload() {
@@ -675,12 +707,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
     } catch (err) {
-      sendResponse({
-        id: msg.id,
-        label: "offline",
-        state: "pending",
-        error: String(err && err.message ? err.message : err),
-      });
+      sendResponse(failureReply(msg.id, err));
     }
   })();
   return true;

@@ -127,6 +127,14 @@ h2 {
   margin: 8px auto;
   background: conic-gradient(var(--accent) 0%, #2a3b55 0%);
 }
+#last-scan-card[data-state="unavailable"] #score-label,
+#last-scan-card[data-state="cancelled"] #score-label {
+  color: #ffd7a8;
+}
+#last-scan-card[data-state="loading"] #score-label {
+  color: #c9d7ff;
+}
+.scan-detail { margin-top: 6px; }
 .about ul { margin: 0; padding-left: 1.1rem; color: var(--muted); }
 .about li { margin-bottom: 6px; }
 code { font-size: 11px; color: #b8d4ff; }

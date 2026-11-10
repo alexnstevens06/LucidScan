@@ -69,6 +69,7 @@ class FakeElement extends CountingTarget {
       this.parentElement.children = this.parentElement.children.filter((c) => c !== this);
       this.parentElement = null;
     }
+    if (this.page && typeof this.page.notifyRemoved === "function") this.page.notifyRemoved(this);
   }
   get isConnected() {
     let n = this;
@@ -77,8 +78,23 @@ class FakeElement extends CountingTarget {
   }
   get offsetParent() { return this.parentElement; }
   closest() { return null; }
-  querySelector() { return null; }
-  querySelectorAll(sel) { return sel === "img" ? this.page.imgs.filter((i) => i.isConnected) : []; }
+  querySelector(sel) {
+    const found = this.querySelectorAll(sel);
+    return found[0] || null;
+  }
+  querySelectorAll(sel) {
+    const out = [];
+    const walk = (n) => {
+      for (const c of n.children || []) {
+        const isImg = sel === "img" && c.tagName === "IMG";
+        const isBadge = sel === "[data-lucidscan-host]" && c.hasAttribute && c.hasAttribute("data-lucidscan-host");
+        if (isImg || isBadge) out.push(c);
+        walk(c);
+      }
+    };
+    walk(this);
+    return out;
+  }
   getClientRects() { return [{}]; }
   getBoundingClientRect() { return { top: 50, left: 50, bottom: 70, width: 100, height: 20 }; }
 }
@@ -127,11 +143,18 @@ function makePage({ respond } = {}) {
     disconnect() { observers.io -= this.on.size; this.on.clear(); }
   }
   class MutationObserver {
-    constructor(cb) { this.cb = cb; this.active = false; }
+    constructor(cb) { this.cb = cb; this.active = false; page.mutationObservers.push(this); }
     observe() { if (!this.active) { this.active = true; observers.mo++; } }
     disconnect() { if (this.active) { this.active = false; observers.mo--; } }
   }
   page.observers = observers;
+  page.mutationObservers = [];
+  page.notifyRemoved = (node) => {
+    const record = { addedNodes: [], removedNodes: [node] };
+    for (const obs of page.mutationObservers) {
+      if (obs.active) obs.cb([record]);
+    }
+  };
 
   const makeEvent = () => {
     const ls = new Set();

@@ -77,6 +77,11 @@ interface LastScan {
   label?: string;
   contentType?: string;
   confidence?: number | null;
+  state?: "signal" | "loading" | "unavailable" | "cancelled" | "pending" | "empty" | string;
+  reason?: string | null;
+  mode?: string;
+  progress?: number | null;
+  error?: string;
 }
 
 interface ModelStatus {

@@ -345,7 +345,12 @@
   /** @param {ScoreResult | null | undefined} result */
   function isRetryable(result) {
     if (!result) return true;
-    return result.state === "loading" || result.state === "pending" || result.label === "loading";
+    // Only an in-flight model load is retried. "pending" used to be how hard failures were
+    // reported, and treating it as loading left the badge spinning until the retry budget.
+    if (result.state === "unavailable" || result.state === "cancelled" || result.state === "signal" || result.state === "pending") {
+      return false;
+    }
+    return result.state === "loading" || result.label === "loading";
   }
 
   /**
@@ -435,6 +440,30 @@
     scheduleImageAttempt(img, 0, Date.now(), jobGeneration);
   }
 
+  /** @param {HTMLImageElement} img */
+  function dropImageBadge(img) {
+    try { scoredImgs.delete(img); } catch (_) {}
+    const entry = imgHosts.get(img);
+    if (!entry) return;
+    imgHosts.delete(img);
+    // Mark before remove so the strip observer does not treat our own cleanup as a page attack.
+    try { entry.host.setAttribute("data-lucidscan-release", "1"); } catch (_) {}
+    try { entry.host.remove(); } catch (_) {}
+  }
+
+  /** @param {Node | null | undefined} node */
+  function releaseRemoved(node) {
+    if (!node || node.nodeType !== 1) return;
+    const el = /** @type {Element} */ (node);
+    if (el.tagName === "IMG") {
+      dropImageBadge(/** @type {HTMLImageElement} */ (el));
+      return;
+    }
+    if (typeof el.querySelectorAll === "function") {
+      el.querySelectorAll("img").forEach((img) => dropImageBadge(/** @type {HTMLImageElement} */ (img)));
+    }
+  }
+
   /**
    * @param {HTMLImageElement} img
    * @param {number} attempt
@@ -443,7 +472,11 @@
    */
   function scheduleImageAttempt(img, attempt, startedAt, gen) {
     lowQueue.push(async () => {
-      if (!instance.alive || gen !== jobGeneration || !badgesActive || !img.isConnected) return;
+      if (!instance.alive || gen !== jobGeneration || !badgesActive) return;
+      if (!img.isConnected) {
+        dropImageBadge(img);
+        return;
+      }
       let entry = imgHosts.get(img);
       if (!entry) {
         entry = mountShadowHost("absolute");
@@ -463,6 +496,10 @@
       }
       const cacheKey = hashStr(src || dataUrl || "");
       const result = await requestScore("scoreImage", { src, dataUrl, cacheKey });
+      if (!img.isConnected) {
+        dropImageBadge(img);
+        return;
+      }
       if (!instance.alive || gen !== jobGeneration || !imgHosts.has(img)) return;
       if (isRetryable(result)) {
         if (Date.now() - startedAt > RETRY_BUDGET_MS) {
@@ -564,6 +601,7 @@
     if (!badgesActive) return;
     for (const m of mutations) {
       for (const n of m.addedNodes) pendingNodes.push(n);
+      for (const n of m.removedNodes) releaseRemoved(n);
     }
     scheduleMutationFlush();
   });
@@ -729,9 +767,11 @@
     for (const m of mutations) {
       for (const n of m.removedNodes) {
         const el = /** @type {Element} */ (n);
-        if (n.nodeType === 1 && (el.hasAttribute?.(BADGE_ATTR) || el.querySelector?.(`[${BADGE_ATTR}]`))) {
-          stripped = true;
-        }
+        if (n.nodeType !== 1) continue;
+        if (el.getAttribute?.("data-lucidscan-release") === "1") continue;
+        const nested = el.querySelector?.(`[${BADGE_ATTR}]`);
+        if (nested && nested.getAttribute?.("data-lucidscan-release") === "1") continue;
+        if (el.hasAttribute?.(BADGE_ATTR) || nested) stripped = true;
       }
     }
     if (!stripped) return;

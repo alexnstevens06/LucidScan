@@ -20,8 +20,24 @@
  *   confidence: number | null,
  *   label: string,
  *   contentType: string,
+ *   state: "signal" | "loading" | "unavailable" | "cancelled",
  *   mode?: string,
+ *   reason?: string | null,
+ *   progress?: number | null,
  * }} ScanDisplay
+ */
+
+/**
+ * @typedef {{
+ *   type: string,
+ *   content: string,
+ *   signal: AbortSignal,
+ *   score?: (type: string, content: string, attempt: number) => Promise<unknown>,
+ *   postVideo?: (content: string, signal: AbortSignal) => Promise<{ ok?: boolean, status?: number, data?: unknown } | null>,
+ *   sleep?: (ms: number, signal: AbortSignal) => Promise<void>,
+ *   now?: () => number,
+ *   onUpdate?: (display: ScanDisplay) => void,
+ * }} MenuScanRequest
  */
 
 /**
@@ -650,64 +666,387 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 });
 
-chrome.contextMenus.onClicked.addListener(async (info) => {
-  let type;
-  let content;
-  if (info.menuItemId === "scan-text" && info.selectionText) {
-    type = "text";
-    content = info.selectionText;
-  } else if (info.menuItemId === "scan-image" && info.srcUrl) {
-    type = "image";
-    content = info.srcUrl;
-  } else if (info.menuItemId === "scan-video" && info.srcUrl) {
-    type = "video";
-    content = info.srcUrl;
-  } else {
-    return;
+function menuScanLimits() {
+  return {
+    delays: [2000, 4000, 8000, 15000],
+    budgetMs: 45000,
+    videoTimeoutMs: 20000,
+    maxAttempts: 8,
+  };
+}
+
+/** @param {unknown} value @returns {number | null} */
+function finiteScore(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** @param {unknown} err */
+function messageOf(err) {
+  return String(err && /** @type {{ message?: string }} */ (err).message ? /** @type {{ message?: string }} */ (err).message : err);
+}
+
+/**
+ * Map an engine reply onto a stored scan. A number is kept only when the engine
+ * reported a real signal. Loading stays retryable. Everything else is terminal
+ * and has no confidence.
+ * @param {any} scored
+ * @param {string} contentType
+ * @returns {ScanDisplay}
+ */
+function settleEngineScan(scored, contentType) {
+  const type = contentType || "unknown";
+  /** @param {ScanDisplay["state"]} state @param {string} label @param {unknown} reason @param {Partial<ScanDisplay>} [extra] @returns {ScanDisplay} */
+  const terminal = (state, label, reason, extra) => ({
+    confidence: null,
+    label,
+    contentType: type,
+    state,
+    reason: reason == null ? null : String(reason),
+    ...extra,
+  });
+  if (!scored || typeof scored !== "object") {
+    return terminal("unavailable", "unavailable", "empty scan result");
   }
+  if (scored.cancelled === true || scored.state === "cancelled") {
+    return terminal("cancelled", "cancelled", scored.reason || scored.error || "scan cancelled");
+  }
+  const state = typeof scored.state === "string" ? scored.state : "";
+  if (state === "loading" || scored.label === "loading") {
+    const progress = finiteScore(scored.progress);
+    return {
+      confidence: null,
+      label: "loading",
+      contentType: type,
+      state: "loading",
+      reason: scored.reason || scored.error || "model still loading",
+      progress,
+    };
+  }
+  const score = finiteScore(scored.score);
+  const honestSignal = state === "signal" && score != null && scored.mode !== "mock" && !scored.heuristics && !scored.fallbackReason;
+  if (honestSignal) {
+    return {
+      confidence: /** @type {number} */ (score),
+      label: typeof scored.label === "string" && scored.label ? scored.label : "local score",
+      contentType: type,
+      state: "signal",
+      mode: typeof scored.mode === "string" ? scored.mode : "transformers",
+      reason: null,
+    };
+  }
+  if (state === "signal" || state === "pending") {
+    return terminal("unavailable", "unavailable", scored.reason || scored.error || "model returned no score");
+  }
+  return terminal("unavailable", "unavailable", scored.reason || scored.fallbackReason || scored.error || "scan unavailable");
+}
 
-  /** @type {ScanDisplay} */
-  let display = { confidence: null, label: "pending", contentType: type };
+/**
+ * Optional video server: only a finite numeric confidence on HTTP success is a score.
+ * @param {boolean} ok
+ * @param {number | undefined} status
+ * @param {any} data
+ * @param {string} contentType
+ * @returns {ScanDisplay}
+ */
+function settleServerScan(ok, status, data, contentType) {
+  const type = contentType || "video";
+  const serverReason = data && typeof data === "object" ? (data.error || data.reason) : null;
+  if (!ok) {
+    return settleEngineScan({
+      state: "unavailable",
+      reason: serverReason ? String(serverReason) : `server responded HTTP ${status || "error"}`,
+    }, type);
+  }
+  const score = finiteScore(data && data.confidence);
+  if (score == null) {
+    return settleEngineScan({
+      state: "unavailable",
+      reason: serverReason ? String(serverReason) : "server returned no score",
+    }, type);
+  }
+  return {
+    confidence: score,
+    label: "server score",
+    contentType: type,
+    state: "signal",
+    mode: "flask",
+    reason: null,
+  };
+}
 
+/** @param {AbortSignal | null | undefined} signal @param {string} contentType @returns {ScanDisplay} */
+function terminalFromAbort(signal, contentType) {
+  const reason = signal && signal.reason;
+  const name = reason && /** @type {{ name?: string }} */ (reason).name;
+  if (name === "TimeoutError") {
+    return settleEngineScan({ state: "unavailable", reason: "optional server did not respond" }, contentType);
+  }
+  return settleEngineScan({ state: "cancelled", reason: "scan cancelled" }, contentType);
+}
+
+/**
+ * Right-click scan. Retries only while the engine says it is still loading.
+ * Empty input, cancellation, timeout, and a missing score stay unscored.
+ * @param {MenuScanRequest} request
+ * @returns {Promise<ScanDisplay>}
+ */
+async function resolveContextMenuScan(request) {
+  const type = request.type;
+  const content = String(request.content || "").trim();
+  const signal = request.signal;
+  if (!content) return settleEngineScan({ state: "unavailable", reason: "nothing to scan" }, type);
+  if (type === "video") {
+    if (signal.aborted) return terminalFromAbort(signal, type);
+    try {
+      const posted = request.postVideo ? await request.postVideo(content, signal) : null;
+      return settleServerScan(!!(posted && posted.ok), posted ? posted.status : 0, posted && posted.data, type);
+    } catch (err) {
+      if (signal.aborted) return terminalFromAbort(signal, type);
+      return settleEngineScan({ state: "unavailable", reason: `scan failed: ${messageOf(err)}` }, type);
+    }
+  }
+  const limits = menuScanLimits();
+  const now = request.now || (() => Date.now());
+  const started = now();
   try {
-    if (type === "text" || type === "image") {
-      const scored = await scoreViaOffscreen(type, {
-        id: `menu-${Date.now()}`,
-        text: type === "text" ? content : undefined,
-        src: type === "image" ? content : undefined,
-      });
-      if (scored && scored.state === "signal" && typeof scored.score === "number") {
-        display = {
-          confidence: scored.score,
-          label: scored.label || "local score",
-          contentType: type,
-          mode: scored.mode || "transformers",
-        };
+    for (let attempt = 0; attempt < limits.maxAttempts; attempt++) {
+      if (signal.aborted) return terminalFromAbort(signal, type);
+      const scored = request.score ? await request.score(type, content, attempt) : null;
+      const display = settleEngineScan(scored, type);
+      if (display.state !== "loading") return display;
+      if (now() - started > limits.budgetMs || attempt === limits.maxAttempts - 1) {
+        return settleEngineScan({
+          state: "unavailable",
+          reason: "model did not finish loading — use Retry model load, then scan again",
+        }, type);
       }
-    } else {
-      const resp = await fetch("http://localhost:5000/detect", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type, content }),
-      });
-      const data = await resp.json();
-      display = {
-        confidence: data.confidence,
-        label: "server score",
-        contentType: type,
-        mode: "flask",
-      };
+      if (request.onUpdate) request.onUpdate(display);
+      const delayMs = limits.delays[Math.min(attempt, limits.delays.length - 1)];
+      if (request.sleep) await request.sleep(delayMs, signal);
     }
   } catch (err) {
-    console.warn("LucidScan scan failed:", err);
-    display = { confidence: null, label: "offline", contentType: type };
+    if (signal.aborted) return terminalFromAbort(signal, type);
+    return settleEngineScan({ state: "unavailable", reason: `scan failed: ${messageOf(err)}` }, type);
   }
+  return settleEngineScan({
+    state: "unavailable",
+    reason: "model did not finish loading — use Retry model load, then scan again",
+  }, type);
+}
 
-  try {
+/** @param {chrome.contextMenus.OnClickData | null | undefined} info */
+function menuRequestFromInfo(info) {
+  if (!info || !info.menuItemId) return null;
+  if (info.menuItemId === "scan-text") {
+    return { type: "text", content: typeof info.selectionText === "string" ? info.selectionText.trim() : "" };
+  }
+  if (info.menuItemId === "scan-image") {
+    return { type: "image", content: typeof info.srcUrl === "string" ? info.srcUrl.trim() : "" };
+  }
+  if (info.menuItemId === "scan-video") {
+    return { type: "video", content: typeof info.srcUrl === "string" ? info.srcUrl.trim() : "" };
+  }
+  return null;
+}
+
+/**
+ * Child signal for the optional video POST. Parent abort cancels it; the timer
+ * aborts it if the local server never answers. arm() is cleared on abort.
+ * @param {AbortSignal} parent
+ * @param {(ms: number, fn: () => void) => () => void} arm
+ * @returns {{ signal: AbortSignal, cancel: () => void }}
+ */
+function createVideoSignal(parent, arm) {
+  const child = new AbortController();
+  /** @type {(() => void) | null} */
+  let cancelTimer = null;
+  const stopTimer = () => {
+    if (!cancelTimer) return;
+    cancelTimer();
+    cancelTimer = null;
+  };
+  /** @param {AbortSignal} from */
+  const abortChild = (from) => {
+    if (child.signal.aborted) return;
+    const reason = from && from.reason;
+    if (reason instanceof Error) child.abort(reason);
+    else child.abort(new DOMException("scan cancelled", "AbortError"));
+  };
+  if (parent.aborted) abortChild(parent);
+  else {
+    cancelTimer = arm(menuScanLimits().videoTimeoutMs, () => {
+      if (!child.signal.aborted) child.abort(new DOMException("video scan timed out", "TimeoutError"));
+    });
+    parent.addEventListener("abort", () => abortChild(parent), { once: true });
+  }
+  child.signal.addEventListener("abort", stopTimer, { once: true });
+  const cancel = () => {
+    stopTimer();
+    if (!child.signal.aborted) child.abort(new DOMException("scan finished", "AbortError"));
+  };
+  return { signal: child.signal, cancel };
+}
+
+let scanSerial = 0;
+/** @type {AbortController | null} */
+let activeScan = null;
+/** @type {number | null} */
+let scanResultWindowId = null;
+
+function beginContextScan() {
+  if (activeScan) activeScan.abort();
+  const controller = new AbortController();
+  activeScan = controller;
+  const serial = ++scanSerial;
+  return { serial, signal: controller.signal };
+}
+
+/** @param {number} serial */
+function scanStillCurrent(serial) {
+  return serial === scanSerial;
+}
+
+/** @param {number} serial */
+function finishContextScan(serial) {
+  if (serial === scanSerial) activeScan = null;
+}
+
+/** @type {Promise<unknown>} */
+let scanPublishChain = Promise.resolve();
+
+/**
+ * Writes are serialized and a stale serial is dropped, so a cancelled scan cannot
+ * overwrite the result of the scan that replaced it.
+ * @param {number} serial
+ * @param {ScanDisplay} display
+ */
+function publishScan(serial, display) {
+  const run = scanPublishChain.then(async () => {
+    if (!scanStillCurrent(serial)) return false;
     await chrome.storage.local.set({ lastScan: display });
-    await chrome.windows.create({ url: "popup.html", type: "popup", width: 420, height: 360 });
+    return scanStillCurrent(serial);
+  });
+  scanPublishChain = run.then(() => {}, () => {});
+  return run;
+}
+
+/** One result window. A later scan focuses it instead of opening another. */
+async function focusOrCreateScanWindow() {
+  if (scanResultWindowId != null) {
+    try {
+      await chrome.windows.get(scanResultWindowId);
+      await chrome.windows.update(scanResultWindowId, { focused: true });
+      return scanResultWindowId;
+    } catch (_) {
+      scanResultWindowId = null;
+    }
+  }
+  const created = await chrome.windows.create({
+    url: "popup.html",
+    type: "popup",
+    width: 420,
+    height: 440,
+  });
+  scanResultWindowId = created && typeof created.id === "number" ? created.id : null;
+  return scanResultWindowId;
+}
+
+/** @param {number} windowId */
+function forgetScanWindow(windowId) {
+  if (windowId === scanResultWindowId) scanResultWindowId = null;
+}
+
+/** @param {number} ms @param {() => void} fn */
+function armTimeout(ms, fn) {
+  const id = setTimeout(fn, ms);
+  return () => clearTimeout(id);
+}
+
+/** @param {number} ms @param {AbortSignal} signal @returns {Promise<void>} */
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new DOMException("scan cancelled", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason instanceof Error ? signal.reason : new DOMException("scan cancelled", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+chrome.windows.onRemoved.addListener(forgetScanWindow);
+
+chrome.contextMenus.onClicked.addListener(async (info) => {
+  const request = menuRequestFromInfo(info);
+  if (!request) return;
+  const started = beginContextScan();
+  /** @type {() => void} */
+  let releaseVideo = () => {};
+  let signal = started.signal;
+  if (request.type === "video") {
+    const video = createVideoSignal(started.signal, armTimeout);
+    signal = video.signal;
+    releaseVideo = video.cancel;
+  }
+  try {
+    const display = await resolveContextMenuScan({
+      type: request.type,
+      content: request.content,
+      signal,
+      now: () => Date.now(),
+      sleep: delay,
+      onUpdate: (next) => {
+        publishScan(started.serial, next).catch((err) => {
+          console.warn("[LucidScan] could not update scan", messageOf(err));
+        });
+      },
+      score: (type, content, attempt) => scoreViaOffscreen(type, {
+        id: `menu-${started.serial}-${attempt}`,
+        text: type === "text" ? content : undefined,
+        src: type === "image" ? content : undefined,
+      }),
+      postVideo: async (content, videoSignal) => {
+        const resp = await fetch("http://localhost:5000/detect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "video", content }),
+          signal: videoSignal,
+        });
+        /** @type {unknown} */
+        let data;
+        try {
+          data = await resp.json();
+        } catch (_) {
+          data = null;
+        }
+        return { ok: resp.ok, status: resp.status, data };
+      },
+    });
+    if (!scanStillCurrent(started.serial)) return;
+    await publishScan(started.serial, display);
+    await focusOrCreateScanWindow();
   } catch (err) {
-    console.warn("[LucidScan] could not show scan result", String(err && err.message ? err.message : err));
+    console.warn("[LucidScan] scan failed", messageOf(err));
+    if (!scanStillCurrent(started.serial)) return;
+    try {
+      await publishScan(started.serial, settleEngineScan({
+        state: "unavailable",
+        reason: `scan failed: ${messageOf(err)}`,
+      }, request.type));
+      await focusOrCreateScanWindow();
+    } catch (showErr) {
+      console.warn("[LucidScan] could not show scan result", messageOf(showErr));
+    }
+  } finally {
+    releaseVideo();
+    finishContextScan(started.serial);
   }
 });
 

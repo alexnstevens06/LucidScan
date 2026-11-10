@@ -133,3 +133,33 @@ test("disable during a pending retry cancels it", async () => {
   await page.advance(60000);
   assert.equal(page.sent.length, n);
 });
+
+test("a hard failure reported as pending is unavailable and is not retried", async () => {
+  const page = makePage({
+    respond: () => ({ state: "pending", label: "offline", error: "scoring failed: boom" }),
+  });
+  page.addImg();
+  page.inject();
+  await page.flush();
+  assert.deepEqual(page.pillTexts(), ["unavailable"]);
+  const pill = page.badgeHosts()[0].shadow.kids.find((k) => k.className === "pill");
+  assert.match(pill.title, /scoring failed: boom/);
+  assert.doesNotMatch(pill.textContent, /\d/);
+  await page.advance(60000);
+  assert.equal(page.sent.length, 1);
+});
+
+test("removing an image drops its badge and does not retry the scan", async () => {
+  const page = makePage({ respond: () => ({ state: "loading" }) });
+  const img = page.addImg();
+  page.inject();
+  await page.flush();
+  assert.equal(page.badgeHosts().length, 1);
+  const sent = page.sent.length;
+  img.remove();
+  await page.flush();
+  assert.equal(page.badgeHosts().length, 0);
+  await page.advance(11 * 60 * 1000);
+  assert.equal(page.sent.length, sent);
+  assert.equal(page.badgeHosts().length, 0);
+});

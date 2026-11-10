@@ -8,27 +8,121 @@ function button(id) {
   return /** @type {HTMLButtonElement} */ (document.getElementById(id));
 }
 
+/**
+ * Stored scans from older builds have no state. A missing number is not still running.
+ * @param {LastScan | null | undefined} scan
+ * @returns {LastScan | null}
+ */
+function presentedScan(scan) {
+  if (!scan) return null;
+  const confidence = scan.confidence == null ? null : Number(scan.confidence);
+  const hasScore = confidence != null && Number.isFinite(confidence);
+  if (scan.state === "signal" && hasScore && scan.mode !== "mock") {
+    return { ...scan, confidence, state: "signal" };
+  }
+  if (scan.state === "loading") return { ...scan, confidence: null, state: "loading" };
+  if (scan.state === "cancelled" || scan.label === "cancelled") {
+    return { ...scan, confidence: null, state: "cancelled", reason: scan.reason || "scan cancelled" };
+  }
+  if (!scan.state && hasScore) return { ...scan, confidence, state: "signal" };
+  const pending = scan.state === "pending" || scan.label === "pending";
+  return {
+    ...scan,
+    confidence: null,
+    state: "unavailable",
+    reason: scan.reason || scan.error || (pending ? "previous scan did not finish" : "scan unavailable"),
+  };
+}
+
+/** @param {string | undefined} value @returns {"signal" | "loading" | "cancelled" | "unavailable" | "empty"} */
+function scanViewState(value) {
+  if (value === "signal" || value === "loading" || value === "cancelled" || value === "unavailable") return value;
+  return "empty";
+}
+
 /** @param {LastScan | null | undefined} scan */
 function paintLastScan(scan) {
   const scoreEl = el("confidence-score");
   const typeEl = el("content-type");
   const labelEl = el("score-label");
+  const detailEl = el("scan-detail");
+  const card = el("last-scan-card");
   const circle = /** @type {HTMLElement} */ (document.querySelector(".score-circle"));
-  if (!scan) {
+  /** @param {string} text */
+  const showDetail = (text) => {
+    if (!text) {
+      detailEl.hidden = true;
+      detailEl.textContent = "";
+      return;
+    }
+    detailEl.hidden = false;
+    detailEl.textContent = text;
+  };
+  const clearRing = () => {
+    circle.style.background = "conic-gradient(#2a3b55 100%, #2a3b55 100%)";
+  };
+  const view = presentedScan(scan);
+  if (!view) {
     scoreEl.textContent = "—";
     typeEl.textContent = "—";
+    labelEl.textContent = "local score";
+    card.dataset.state = "empty";
+    showDetail("");
+    clearRing();
     return;
   }
-  labelEl.textContent = scan.label || "local score";
-  typeEl.textContent = scan.contentType || "—";
-  if (scan.confidence == null || Number.isNaN(Number(scan.confidence))) {
-    scoreEl.textContent = scan.label === "offline" || scan.label === "unavailable" ? "unavailable" : "—";
-    circle.style.background = "conic-gradient(#2a3b55 100%, #2a3b55 100%)";
-    return;
+  typeEl.textContent = view.contentType || "—";
+  const state = scanViewState(view.state);
+  card.dataset.state = state;
+  switch (state) {
+    case "signal": {
+      const pct = Math.round(Number(view.confidence) * 100);
+      labelEl.textContent = view.label || "local score";
+      scoreEl.textContent = `${pct}`;
+      circle.style.background = `conic-gradient(#6bc4a0 ${pct}%, #2a3b55 ${pct}%)`;
+      showDetail(view.mode === "flask" ? "Optional local server score." : "");
+      break;
+    }
+    case "loading": {
+      labelEl.textContent = "loading";
+      scoreEl.textContent = "…";
+      clearRing();
+      const progress = typeof view.progress === "number" && Number.isFinite(view.progress)
+        ? ` (${Math.round(view.progress)}%)`
+        : "";
+      showDetail(`${view.reason || "Model still loading."}${progress} The result updates here when the scan finishes.`);
+      break;
+    }
+    case "cancelled": {
+      labelEl.textContent = "cancelled";
+      scoreEl.textContent = "—";
+      clearRing();
+      showDetail(view.reason || "Scan cancelled. Right-click the same item to try again.");
+      break;
+    }
+    case "unavailable": {
+      labelEl.textContent = "unavailable";
+      scoreEl.textContent = "—";
+      clearRing();
+      showDetail(view.reason || "No score was returned. Right-click the same item to try again.");
+      break;
+    }
+    case "empty": {
+      labelEl.textContent = "local score";
+      scoreEl.textContent = "—";
+      clearRing();
+      showDetail("");
+      break;
+    }
+    default: {
+      const unexpected = /** @type {never} */ (state);
+      labelEl.textContent = "unavailable";
+      scoreEl.textContent = "—";
+      clearRing();
+      showDetail(String(unexpected));
+      break;
+    }
   }
-  const pct = Math.round(Number(scan.confidence) * 100);
-  scoreEl.textContent = `${pct}`;
-  circle.style.background = `conic-gradient(#6bc4a0 ${pct}%, #2a3b55 ${pct}%)`;
 }
 
 
