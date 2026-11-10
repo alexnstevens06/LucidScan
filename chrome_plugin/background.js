@@ -508,13 +508,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "getInferenceStatus") {
     (async () => {
+      /** @type {{ inferenceMode: string, forceMock: boolean } | null} */
+      let flags = null;
       try {
+        flags = await getInferenceFlags();
         await ensureOffscreen();
-        const flags = await getInferenceFlags();
         const status = await chrome.runtime.sendMessage({ type: "offscreen.getStatus", ...flags });
-        sendResponse(status || { mode: flags.inferenceMode || "transformers" });
-      } catch {
-        sendResponse({ mode: "mock", text: "mock", image: "mock" });
+        // No reply is the scorer being absent, not a user mock setting and not a score.
+        sendResponse(status || statusWhenOffscreenDown(new Error("no status reply"), flags));
+      } catch (err) {
+        sendResponse(statusWhenOffscreenDown(err, flags));
       }
     })();
     return true;
@@ -683,6 +686,26 @@ function finiteScore(value) {
 /** @param {unknown} err */
 function messageOf(err) {
   return String(err && /** @type {{ message?: string }} */ (err).message ? /** @type {{ message?: string }} */ (err).message : err);
+}
+
+/**
+ * The offscreen document did not answer. Mock is reported only when settings
+ * already say so. A connection failure is "unavailable", with no score.
+ * @param {unknown} err
+ * @param {{ inferenceMode?: string, forceMock?: boolean } | null} [flags]
+ */
+function statusWhenOffscreenDown(err, flags) {
+  const reason = `offscreen unavailable: ${messageOf(err)}`;
+  const settingsMock = !!(flags && (flags.forceMock === true || flags.inferenceMode === "mock"));
+  const configured = flags && typeof flags.inferenceMode === "string" ? flags.inferenceMode : "";
+  return {
+    mode: settingsMock ? "mock" : (configured || "unknown"),
+    text: "unavailable",
+    image: "unavailable",
+    reason,
+    textError: reason,
+    imageError: reason,
+  };
 }
 
 /**

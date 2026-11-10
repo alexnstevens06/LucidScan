@@ -2,6 +2,9 @@
 // Uses the real functions from background.js, popup.js, and offscreen.js.
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
 const { load } = require("./extract");
 
 const plain = (o) => JSON.parse(JSON.stringify(o));
@@ -439,6 +442,166 @@ test("a cancelled pipeline load does not start the next backend", async () => {
   off.setCancelAfterFailure(true);
   await assert.rejects(() => off.createPipe("text-classification", "m", "q8", "text"));
   assert.deepEqual(calls, ["webgpu"]);
+});
+
+test("offscreen status failure is unavailable and claims mock only from settings", () => {
+  const api = load("background.js", ["statusWhenOffscreenDown", "messageOf"], "", VM);
+  const down = plain(api.statusWhenOffscreenDown(new Error("Could not establish connection"), {
+    inferenceMode: "transformers",
+    forceMock: false,
+  }));
+  assert.equal(down.mode, "transformers");
+  assert.equal(down.text, "unavailable");
+  assert.equal(down.image, "unavailable");
+  assert.equal(down.score, undefined);
+  assert.match(down.reason, /offscreen unavailable/);
+  assert.doesNotMatch(JSON.stringify(down), /"mock"/);
+
+  const unknown = api.statusWhenOffscreenDown(new Error("no status reply"), null);
+  assert.equal(unknown.mode, "unknown");
+  assert.equal(unknown.text, "unavailable");
+
+  const configured = api.statusWhenOffscreenDown(new Error("x"), { inferenceMode: "mock", forceMock: true });
+  assert.equal(configured.mode, "mock");
+  assert.equal(configured.text, "unavailable");
+  assert.equal(configured.score, undefined);
+
+  const bg = fs.readFileSync(path.join(__dirname, "..", "..", "background.js"), "utf8");
+  assert.match(bg, /sendResponse\(statusWhenOffscreenDown\(err, flags\)\)/);
+  assert.doesNotMatch(bg, /text:\s*["']mock["']/);
+});
+
+function flushMicrotasks() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function bootPopup(lastScan, statusReply) {
+  const html = fs.readFileSync(path.join(__dirname, "..", "..", "popup.html"), "utf8");
+  const ids = [...html.matchAll(/id="([^"]+)"/g)].map((match) => match[1]);
+  const nodes = {};
+  const make = (tag) => {
+    const el = {
+      tagName: String(tag || "div").toUpperCase(),
+      id: "",
+      textContent: "",
+      hidden: false,
+      disabled: false,
+      dataset: {},
+      style: {},
+      className: "",
+      title: "",
+      children: [],
+      _html: "",
+      append(...kids) { for (const kid of kids) this.appendChild(kid); },
+      appendChild(kid) { this.children.push(kid); return kid; },
+      addEventListener(type, fn) {
+        this._handlers = this._handlers || {};
+        (this._handlers[type] = this._handlers[type] || []).push(fn);
+      },
+    };
+    Object.defineProperty(el, "innerHTML", {
+      get() { return el._html; },
+      set(value) {
+        el._html = String(value);
+        if (value === "") el.children = [];
+      },
+    });
+    return el;
+  };
+  for (const id of ids) {
+    const el = make("div");
+    el.id = id;
+    nodes[id] = el;
+  }
+  const circle = { style: {} };
+  /** @type {{ type: string, fn: Function }[]} */
+  const domListeners = [];
+  let storageListener = null;
+  const sent = [];
+  const document = {
+    getElementById: (id) => nodes[id] || null,
+    querySelector: (sel) => (sel === ".score-circle" ? circle : null),
+    addEventListener: (type, fn) => domListeners.push({ type, fn }),
+    createElement: (tag) => make(tag),
+  };
+  const chrome = {
+    runtime: {
+      lastError: undefined,
+      sendMessage(msg, cb) {
+        sent.push(msg);
+        queueMicrotask(() => {
+          if (msg.type === "getInferenceStatus") cb(statusReply);
+          else if (msg.type === "getSiteBadgeStatus") cb({ restricted: true, origin: null });
+          else cb({ ok: false, error: "unused in this test" });
+        });
+      },
+    },
+    storage: {
+      local: { get(_defaults, cb) { queueMicrotask(() => cb({ lastScan })); } },
+      onChanged: { addListener(fn) { storageListener = fn; } },
+    },
+    tabs: { query(_query, cb) { if (cb) queueMicrotask(() => cb([])); } },
+    permissions: { request(_query, cb) { if (cb) queueMicrotask(() => cb(false)); } },
+  };
+  const src = fs.readFileSync(path.join(__dirname, "..", "..", "popup.js"), "utf8");
+  vm.runInNewContext(src, {
+    document, chrome, console, URL, queueMicrotask, setTimeout, clearTimeout, setInterval, clearInterval,
+  });
+  const ready = domListeners.find((listener) => listener.type === "DOMContentLoaded");
+  if (!ready) throw new Error("popup.js did not register DOMContentLoaded");
+  ready.fn();
+  return { nodes, sent, storageListener };
+}
+
+test("popup boot paints scan state and does not call a dead scorer mock", async () => {
+  const api = load("background.js", ["statusWhenOffscreenDown", "messageOf"], "", VM);
+  const statusReply = api.statusWhenOffscreenDown(new Error("Could not establish connection"), {
+    inferenceMode: "transformers",
+    forceMock: false,
+  });
+  const { nodes, sent, storageListener } = bootPopup({
+    state: "unavailable",
+    label: "unavailable",
+    contentType: "video",
+    confidence: null,
+    reason: "server returned no score",
+  }, statusReply);
+  for (let i = 0; i < 8; i++) await flushMicrotasks();
+
+  assert.ok(sent.some((msg) => msg.type === "getInferenceStatus"));
+  assert.equal(nodes["last-scan-card"].dataset.state, "unavailable");
+  assert.equal(nodes["score-label"].textContent, "unavailable");
+  assert.equal(nodes["confidence-score"].textContent, "—");
+  assert.equal(nodes["content-type"].textContent, "video");
+  assert.match(nodes["scan-detail"].textContent, /no score/);
+  assert.equal(nodes["model-status"].dataset.state, "error");
+  assert.match(nodes["model-status"].textContent, /not ready/);
+  assert.doesNotMatch(nodes["model-status"].textContent, /mock/i);
+  assert.equal(statusReply.mode, "transformers");
+
+  storageListener({
+    lastScan: {
+      newValue: {
+        state: "signal",
+        label: "local score",
+        contentType: "text",
+        confidence: 0.42,
+        mode: "transformers",
+      },
+    },
+  }, "local");
+  assert.equal(nodes["confidence-score"].textContent, "42");
+  assert.equal(nodes["last-scan-card"].dataset.state, "signal");
+  assert.equal(nodes["score-label"].textContent, "local score");
+  assert.equal(nodes["scan-detail"].hidden, true);
+
+  storageListener({
+    lastScan: { newValue: { label: "pending", contentType: "image", confidence: null } },
+  }, "local");
+  assert.equal(nodes["last-scan-card"].dataset.state, "unavailable");
+  assert.equal(nodes["confidence-score"].textContent, "—");
+  assert.match(nodes["scan-detail"].textContent, /did not finish/);
+  assert.doesNotMatch(nodes["confidence-score"].textContent, /\d/);
 });
 
 test("offscreen failures are unavailable and carry no score", () => {

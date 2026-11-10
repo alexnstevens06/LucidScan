@@ -190,20 +190,42 @@ function startProgressPoll() {
   }, 400);
 }
 
+/** @param {ModelStatus["text"]} value */
+function modelPhase(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && typeof value.status === "string") return value.status;
+  return "";
+}
+
+/**
+ * Scorer missing, failed, or turned off in settings. Not a successful load.
+ * @param {ModelStatus | null | undefined} resp
+ */
+function modelsAreDown(resp) {
+  if (!resp) return true;
+  const t = modelPhase(resp.text);
+  const i = modelPhase(resp.image);
+  if (t === "unavailable" || i === "unavailable" || t === "error" || i === "error") return true;
+  return resp.mode === "mock";
+}
+
 /** @param {ModelStatus | null | undefined} resp */
 function formatModelStatus(resp) {
   if (!resp) return "Models: starting…";
-  const mode = resp.mode || "transformers";
-  const t = resp.text || "?";
-  const i = resp.image || "?";
+  const t = modelPhase(resp.text) || "?";
+  const i = modelPhase(resp.image) || "?";
   const td = resp.textDevice ? `/${resp.textDevice}` : "";
   const id = resp.imageDevice ? `/${resp.imageDevice}` : "";
   if (t === "loading" || i === "loading") {
     return "Models: loading (first run may download from Hugging Face)…";
   }
-  if (t === "error" || i === "error" || mode === "mock") {
+  if (t === "unavailable" || i === "unavailable") {
+    return "Models unavailable — the scorer is not ready. Badges show \"unavailable\" (no score).";
+  }
+  if (t === "error" || i === "error" || resp.mode === "mock") {
     return "Models unavailable — badges show \"unavailable\" (no score) until they load.";
   }
+  const mode = resp.mode || "transformers";
   return `Models: ${mode} — text ${t}${td}, image ${i}${id}`;
 }
 
@@ -321,9 +343,8 @@ function refreshModels() {
       return;
     }
     modelStatus.textContent = formatModelStatus(resp);
-    const bad = !resp || resp.mode === "mock" || resp.text === "error" || resp.image === "error";
-    const loading = resp && (resp.text === "loading" || resp.image === "loading");
-    modelStatus.dataset.state = loading ? "loading" : bad ? "error" : "ok";
+    const loading = !!resp && (modelPhase(resp.text) === "loading" || modelPhase(resp.image) === "loading");
+    modelStatus.dataset.state = loading ? "loading" : modelsAreDown(resp) ? "error" : "ok";
   });
 }
 
